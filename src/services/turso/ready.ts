@@ -1,41 +1,20 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { createClient } from "@libsql/client/web";
 import { CONFIG } from "../../config.js";
 import { log } from "../logger.js";
+import { ensureSqldRunning, shouldAutoStartSqld } from "./sqld-launcher.js";
+import { probeSqld } from "./sqld-probe.js";
 import { tursoShardManager } from "./shard-manager.js";
 
-const HEALTH_TIMEOUT_MS = 2000;
 const HEALTH_RETRY_DELAYS_MS = [100, 250, 500, 1000];
 
 let initPromise: Promise<void> | null = null;
 let isReady = false;
 
-async function probeSqld(): Promise<void> {
-  const client = createClient({
-    url: CONFIG.sqldUrl,
-    ...(CONFIG.sqldAuthToken ? { authToken: CONFIG.sqldAuthToken } : {}),
-    concurrency: 1,
-  });
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      client.execute("SELECT 1"),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`no response within ${HEALTH_TIMEOUT_MS}ms`)),
-          HEALTH_TIMEOUT_MS
-        );
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-    client.close();
-  }
-}
-
-async function waitForSqld(): Promise<void> {
+export async function waitForSqld(
+  delays: readonly number[] = [0, ...HEALTH_RETRY_DELAYS_MS]
+): Promise<void> {
   let lastError: unknown;
-  for (const retryDelay of [0, ...HEALTH_RETRY_DELAYS_MS]) {
+  for (const retryDelay of delays) {
     if (retryDelay) await delay(retryDelay);
     try {
       await probeSqld();
@@ -57,6 +36,7 @@ export async function ensureTursoReady(): Promise<void> {
 
   initPromise = (async () => {
     try {
+      if (shouldAutoStartSqld()) await ensureSqldRunning();
       await waitForSqld();
       await tursoShardManager.getAllShards("user", "");
       isReady = true;

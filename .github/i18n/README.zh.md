@@ -87,6 +87,8 @@ docker run -d --name opencode-mem-sqld \
 
 请在 `http://127.0.0.1:8080/health` 确认服务器运行正常。插件默认使用 `sqldUrl: "http://127.0.0.1:8080"`，因此此本地设置无需更改配置。对于远程服务器，请设置 `sqldUrl`，并在服务器需要认证时设置 `sqldAuthToken`（接受 `env://…` 与 `file://…` 引用）。
 
+如需零配置本地启动，请设置 `"autoStartSqld": true`。在使用默认 `sqldUrl` 时，插件会在加载时自动启动 `opencode-mem-sqld` 容器（首次使用时拉取镜像），后续加载时复用它，且从不停止或删除它 — 记忆会持久保存在 `opencode-mem-sqld-data` 卷中。必须运行 Docker。自定义或远程的 `sqldUrl` 不会被触碰。
+
 升级或重建容器时请保留命名卷 — 删除它会删除所有记忆。在执行任何破坏性操作前，请备份（或运行 `memory export`）。你还需要一个远程嵌入端点；参见[选择 / 配置嵌入模型](#选择--配置嵌入模型)。
 
 对于 OpenCode v2，将包添加到原生 `plugins` 列表：
@@ -247,6 +249,7 @@ memory({ mode: "import", inputPath: "./memories.json" });
 | --------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `sqldUrl`                                                             | `"http://127.0.0.1:8080"`       | 保存记忆的 libSQL 服务器（`sqld`）的 URL。                                                              |
 | `sqldAuthToken`                                                       | _(空)_                          | sqld 的认证令牌；接受 `env://…` / `file://…` 引用。                                                     |
+| `autoStartSqld`                                                       | `false`                         | 插件加载时启动默认的本地 sqld 容器（需要 Docker）；自定义 `sqldUrl` 时忽略此设置。                     |
 | `storagePath`                                                         | `"~/.opencode-mem/data"`        | 本地缓存与 Markdown vault 索引；记忆本身存放在 sqld 中。                                              |
 | `webServerEnabled` / `webServerPort` / `webServerHost`                | `true` / `4747` / `"127.0.0.1"` | Web UI 服务器开关、端口与绑定地址。                                                                    |
 | `autoCaptureEnabled`                                                  | `true`                          | 将空闲会话总结为记忆（需要配置提供方，参见 [Auto-Capture AI Provider](#自动捕获-ai-提供商)）。 |
@@ -607,6 +610,7 @@ memory({ mode: "import", inputPath: "./memories.json" });
 - 对于 `opencodeProvider` / `opencodeModel`（例如 DeepSeek V4 thinking），OpenCode 仍会为结构化输出发送强制的 `tool_choice`。opencode-mem 在内部 `opencode-mem-structured` 代理上禁用思考（并在变体合并后在 `chat.params` 中重新应用），以便自动捕获与画像学习可以完成。你的交互式聊天代理不变。若捕获仍因 thinking/`tool_choice` 错误失败，请为 `opencodeModel` 选择非思考模型，或配置完整的手动回退（`memoryModel` + `memoryApiUrl`）。
 - **`opencode-claude-auth` / Claude Code：** 自动捕获使用带有你已认证 `anthropic` 提供商的 OpenCode。强制的 `format: json_schema` 常与 Claude-auth 循环，因此 opencode-mem 对 `opencodeProvider: "anthropic"` 使用保留认证的 **text-JSON** 路径（无强制 `StructuredOutput` 工具；用 Zod 解析回复）。步骤看门狗仍会在 2 步后中止失控的内部会话。若捕获仍失败，请配置完整的手动 Anthropic API 密钥回退（`memoryProvider: "anthropic"` + `memoryModel` + `memoryApiUrl` + `memoryApiKey`）— Claude Pro/Max OAuth 无法在 OpenCode 外重用。
 - **数据库连接错误：** 确认 sqld 正在运行且 `sqldUrl` 指向它（默认 `http://127.0.0.1:8080`），并在服务器需要认证时设置 `sqldAuthToken`。
+- **本地 sqld 未启动：** `autoStartSqld` 需要 Docker 正在运行；请启动 Docker，或使用 `docker compose -f scripts/sqld-compose.yml up -d`。首次拉取镜像可能需要几分钟 — 若超时，请检查 `docker logs opencode-mem-sqld` 后重试。
 - **“需要远程嵌入”错误：** 请同时设置 `embeddingApiUrl` 与 `embeddingApiKey`；没有本地嵌入后端。
 
 ## 公共子路径导出

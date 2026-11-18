@@ -14,6 +14,9 @@
   // Set sqldAuthToken if the server requires authentication (env:// / file:// refs supported).
   "sqldUrl": "http://127.0.0.1:8080",
   // "sqldAuthToken": "env://SQLD_AUTH_TOKEN",
+  // Opt-in: start this local sqld container automatically on plugin load.
+  // Requires Docker. Ignored when sqldUrl is a custom/remote URL.
+  // "autoStartSqld": false,
 
   // Memory persistence: "database" (default) or "markdown".
   // When "markdown", all .md files under markdownPath are the source of truth;

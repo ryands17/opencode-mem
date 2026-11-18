@@ -14,6 +14,7 @@ import { performUserProfileLearning } from "./services/user-memory-learning.js";
 import { userPromptManager } from "./services/user-prompt/user-prompt-manager.js";
 import { startWebServer, WebServer } from "./services/web-server.js";
 import { ensureTursoReady } from "./services/turso/ready.js";
+import { shouldAutoStartSqld } from "./services/turso/sqld-launcher.js";
 import { tursoConnectionManager } from "./services/turso/connection-manager.js";
 import { retainPluginTurso } from "./services/turso/plugin-refs.js";
 import { WebAuth } from "./services/web-auth.js";
@@ -66,6 +67,24 @@ function notifyMissingEmbeddingConfig(client?: ToastClient): void {
         message,
         variant: "error",
         duration: 8000,
+      },
+    })
+    .catch(() => {});
+}
+
+function notifySqldStartup(
+  client: ToastClient,
+  message: string,
+  variant: "info" | "success" | "error"
+): void {
+  if (!CONFIG.showErrorToasts || !client?.tui?.showToast) return;
+  client.tui
+    .showToast({
+      body: {
+        title: "Memory",
+        message,
+        variant,
+        duration: variant === "error" ? 8000 : 4000,
       },
     })
     .catch(() => {});
@@ -395,6 +414,20 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   initConfig(directory);
   notifyAutoCaptureProviderStatus(ctx.client);
   notifyMissingEmbeddingConfig(ctx.client);
+  if (shouldAutoStartSqld()) {
+    notifySqldStartup(ctx.client, "Starting local sqld...", "info");
+    try {
+      await ensureTursoReady();
+      notifySqldStartup(ctx.client, "Local sqld is ready", "success");
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      notifySqldStartup(
+        ctx.client,
+        `Could not start local sqld: ${detail}. Start Docker or run: docker compose -f scripts/sqld-compose.yml up -d`,
+        "error"
+      );
+    }
+  }
   const { startAutoUpdate } = await import("./services/auto-update.js");
   startAutoUpdate(ctx, CONFIG.autoUpdate);
   const tags = getTags(directory);

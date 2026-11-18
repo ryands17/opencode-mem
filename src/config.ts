@@ -9,6 +9,7 @@ import {
   resolveMemoryProviderPresetDefaults,
 } from "./services/ai/memory-provider-presets.js";
 import { getDefaultInjectionMarkers } from "./services/injected-prompt-filter.js";
+import { DEFAULT_SQLD_URL } from "./services/turso/sqld-defaults.js";
 
 const CONFIG_DIR = join(homedir(), ".config", "opencode");
 const DATA_DIR = join(homedir(), ".opencode-mem");
@@ -31,6 +32,8 @@ interface OpenCodeMemConfig {
   sqldUrl?: string;
   /** Auth token for sqld. Supports env:// / file:// refs. */
   sqldAuthToken?: string;
+  /** Opt-in: start the default local sqld container on plugin load. Default false. */
+  autoStartSqld?: boolean;
   /**
    * Memory persistence backend. `database` (default) stores content in Turso.
    * `markdown` uses a folder of `.md` files as source of truth; Turso is only
@@ -308,7 +311,8 @@ const DEFAULTS: Required<
   };
 } = {
   storagePath: join(DATA_DIR, "data"),
-  sqldUrl: "http://127.0.0.1:8080",
+  sqldUrl: DEFAULT_SQLD_URL,
+  autoStartSqld: false,
   memoryBackend: "database",
   embeddingModel: "Xenova/nomic-embed-text-v1",
   embeddingDimensions: 768,
@@ -457,6 +461,10 @@ const CONFIG_TEMPLATE = `{
   // libSQL server (sqld) holding memories. Set sqldAuthToken if the server requires auth.
   // "sqldUrl": "http://127.0.0.1:8080",
   // "sqldAuthToken": "env://SQLD_AUTH_TOKEN",
+
+  // Opt-in: start the default local sqld container on plugin load (Docker required).
+  // Ignored when sqldUrl points at a custom/remote server.
+  // "autoStartSqld": false,
 
   // Memory persistence: "database" (default) or "markdown"
   // "memoryBackend": "markdown",
@@ -1244,6 +1252,7 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
     storagePath: expandPath(fileConfig.storagePath ?? DEFAULTS.storagePath),
     sqldUrl,
     sqldAuthToken,
+    autoStartSqld: fileConfig.autoStartSqld ?? DEFAULTS.autoStartSqld,
     memoryBackend,
     markdownPath,
     userEmailOverride: fileConfig.userEmailOverride,

@@ -32,6 +32,12 @@ describe("sqld config", () => {
     loadConfig({});
     expect(CONFIG.sqldUrl).toBe("http://127.0.0.1:8080");
     expect(CONFIG.sqldAuthToken).toBeUndefined();
+    expect(CONFIG.autoStartSqld).toBe(false);
+  });
+
+  it("loads the autoStartSqld opt-in", () => {
+    loadConfig({ autoStartSqld: true });
+    expect(CONFIG.autoStartSqld).toBe(true);
   });
 
   it("trims trailing slashes from sqldUrl", () => {

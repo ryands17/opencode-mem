@@ -118,6 +118,8 @@ Alternatively use [`scripts/sqld-compose.yml`](scripts/sqld-compose.yml): `docke
 
 Confirm the server is healthy at `http://127.0.0.1:8080/health`. The plugin defaults to `sqldUrl: "http://127.0.0.1:8080"`, so this local setup needs no config change. For a remote server, set `sqldUrl` and, if it requires authentication, `sqldAuthToken` (accepts `env://…` and `file://…` references).
 
+For zero-config local startup, set `"autoStartSqld": true`. With the default `sqldUrl`, the plugin starts the `opencode-mem-sqld` container automatically on load (pulling the image on first use), reuses it on later loads, and never stops or removes it — memories persist in the `opencode-mem-sqld-data` volume. Docker must be running. A custom or remote `sqldUrl` is never touched.
+
 Keep the named volume when upgrading or recreating the container — removing it deletes all memories. Back it up (or run `memory export`) before any destructive operation. You also need a remote embeddings endpoint; see [Choosing / configuring embeddings](#choosing--configuring-embeddings).
 
 For OpenCode v2, add the package to the native `plugins` list:
@@ -303,6 +305,7 @@ Commonly tuned top-level options:
 | --------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `sqldUrl`                                                             | `"http://127.0.0.1:8080"`       | URL of the libSQL server (`sqld`) that holds memories.                                                                          |
 | `sqldAuthToken`                                                       | _(empty)_                       | Auth token for sqld; accepts `env://…` / `file://…` references.                                                                 |
+| `autoStartSqld`                                                       | `false`                         | Start the default local sqld container on plugin load (Docker required); ignored for a custom `sqldUrl`.                        |
 | `storagePath`                                                         | `"~/.opencode-mem/data"`        | Local caches and Markdown vault indexes; memories themselves live in sqld.                                                      |
 | `webServerEnabled` / `webServerPort` / `webServerHost`                | `true` / `4747` / `"127.0.0.1"` | Web UI server switch, port and bind address.                                                                                    |
 | `autoCaptureEnabled`                                                  | `true`                          | Summarize idle sessions into memories (needs a provider, see [Auto-Capture AI Provider](#auto-capture-ai-provider)).            |
@@ -726,6 +729,7 @@ Troubleshooting:
 - For `opencodeProvider` / `opencodeModel` (e.g. DeepSeek V4 thinking), OpenCode still sends forced `tool_choice` for structured output. opencode-mem disables thinking on the internal `opencode-mem-structured` agent (and re-applies that in `chat.params` after variant merge) so auto-capture and profile learning can complete. Your interactive chat agent is unchanged. If capture still fails with a thinking/`tool_choice` error, pick a non-thinking model for `opencodeModel` or configure a complete manual fallback (`memoryModel` + `memoryApiUrl`).
 - **`opencode-claude-auth` / Claude Code:** auto-capture uses OpenCode with your authenticated `anthropic` provider. Forced `format: json_schema` often loops with Claude-auth, so opencode-mem uses an auth-preserving **text-JSON** path for `opencodeProvider: "anthropic"` (no forced `StructuredOutput` tools; reply is parsed with Zod). A step watchdog still aborts runaway internal sessions after 2 steps. If capture still fails, configure a complete manual Anthropic API-key fallback (`memoryProvider: "anthropic"` + `memoryModel` + `memoryApiUrl` + `memoryApiKey`) — Claude Pro/Max OAuth cannot be reused outside OpenCode.
 - **Database connection errors:** confirm sqld is running and `sqldUrl` points at it (`http://127.0.0.1:8080` by default), and set `sqldAuthToken` if the server requires authentication.
+- **Local sqld did not start:** `autoStartSqld` needs Docker running; start Docker or use `docker compose -f scripts/sqld-compose.yml up -d`. A first pull can take minutes — on timeout check `docker logs opencode-mem-sqld` and retry.
 - **"Remote embeddings are required" error:** set both `embeddingApiUrl` and `embeddingApiKey`; there is no local embedding backend.
 
 ## Public Subpath Exports
