@@ -6,7 +6,6 @@ import { getProjectTagInfo } from "./tags.js";
 import { ensureTursoReady } from "./turso/ready.js";
 import { tursoShardManager } from "./turso/shard-manager.js";
 import { tursoConnectionManager } from "./turso/connection-manager.js";
-import { tursoVectorSearch } from "./turso/vector-search.js";
 import type { ShardInfo } from "./turso/types.js";
 
 export type ShardInventoryStatus =
@@ -102,38 +101,37 @@ async function inspectShardContent(dbPath: string): Promise<{
   gitRepoUrl: string | null;
   containerTag: string | null;
 }> {
-  if (!existsSync(dbPath)) {
-    return {
-      memoryCount: 0,
-      pathCandidates: [],
-      projectName: null,
-      gitRepoUrl: null,
-      containerTag: null,
-    };
-  }
+  const match = /\/project\/([a-f0-9]{16})\/shard/.exec(dbPath);
+  const suffix = match?.[1] ? `project_${match[1]}` : null;
+  const where = suffix
+    ? `instr(container_tag, ?) > 0 AND deleted_at IS NULL`
+    : `deleted_at IS NULL`;
+  const args = suffix ? [suffix] : [];
 
   const db = await tursoConnectionManager.getConnection(dbPath);
-  const memoryCount = await tursoVectorSearch.countAllVectors(db);
-  const pathCounts = await tursoVectorSearch.getProjectPathCounts(db);
-  const tags = await tursoVectorSearch.getDistinctTags(db);
-  const first = tags[0];
+  const countRow = await db.get(`SELECT COUNT(*) AS n FROM memories WHERE ${where}`, args);
+  const memoryCount = Number(countRow?.n ?? 0);
+  const pathCounts = await db.all(
+    `SELECT project_path, container_tag, COUNT(*) AS n FROM memories
+     WHERE ${where} GROUP BY project_path, container_tag`,
+    args
+  );
+  const first = await db.get(
+    `SELECT project_name, git_repo_url, container_tag FROM memories WHERE ${where} LIMIT 1`,
+    args
+  );
 
-  // Collapse path+tag rows into path totals while keeping a representative tag.
   const byPath = new Map<string, { path: string; count: number; containerTag: string | null }>();
   for (const row of pathCounts) {
-    const key = normalizeProjectPath(row.projectPath);
+    const key = normalizeProjectPath(String(row.project_path ?? ""));
     const existing = byPath.get(key);
+    const count = Number(row.n);
+    const containerTag = row.container_tag ? String(row.container_tag) : null;
     if (existing) {
-      existing.count += row.count;
-      if (!existing.containerTag && row.containerTag) {
-        existing.containerTag = row.containerTag;
-      }
+      existing.count += count;
+      if (!existing.containerTag && containerTag) existing.containerTag = containerTag;
     } else {
-      byPath.set(key, {
-        path: key,
-        count: row.count,
-        containerTag: row.containerTag,
-      });
+      byPath.set(key, { path: key, count, containerTag });
     }
   }
 
@@ -243,9 +241,10 @@ export class ShardInventoryService {
         const dbPath =
           registeredShard?.dbPath ??
           tursoShardManager.getShardPath("project", scopeHash, shardIndex);
-        const fileExists = existsSync(dbPath);
+        const fileExists = true;
         const content = await inspectShardContent(dbPath);
-        memoryCount += content.memoryCount;
+        // Logical shards share one container tag; summing per shard double-counts.
+        if (descriptors.length === 0) memoryCount = content.memoryCount;
 
         for (const candidate of content.pathCandidates) {
           pathCountMap.set(

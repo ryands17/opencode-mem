@@ -27,6 +27,10 @@ if (!existsSync(DATA_DIR)) {
 
 interface OpenCodeMemConfig {
   storagePath?: string;
+  /** libSQL server (sqld) URL. Defaults to the local Docker endpoint. */
+  sqldUrl?: string;
+  /** Auth token for sqld. Supports env:// / file:// refs. */
+  sqldAuthToken?: string;
   /**
    * Memory persistence backend. `database` (default) stores content in Turso.
    * `markdown` uses a folder of `.md` files as source of truth; Turso is only
@@ -45,15 +49,12 @@ interface OpenCodeMemConfig {
   };
   embeddingModel?: string;
   embeddingDimensions?: number;
+  /** Required: base URL of an OpenAI-compatible embeddings endpoint. */
   embeddingApiUrl?: string;
+  /** Required: API key for the embeddings endpoint. */
   embeddingApiKey?: string;
   /** Opt-in Nomic task prefixes (`search_document:` / `search_query:`). Default false. */
   embeddingUseTaskPrefixes?: boolean;
-  /**
-   * Local transformers.js pooling strategy. Default `"mean"`.
-   * Model presets (bge-m3 → cls, Qwen3-Embedding → last_token) apply when unset.
-   */
-  embeddingPooling?: "mean" | "cls" | "last_token";
   /**
    * Prefix applied to query-task embeddings. When unset, model presets or
    * `embeddingUseTaskPrefixes` (Nomic) may supply one. Explicit `""` disables.
@@ -64,16 +65,6 @@ interface OpenCodeMemConfig {
    * `embeddingQueryPrefix`.
    */
   embeddingDocumentPrefix?: string;
-  /**
-   * Optional dtype for the local ONNX pipeline (e.g. `"q8"`, `"fp32"`).
-   * When set, passed to `pipeline({ dtype })` and outranks auto-detection.
-   */
-  embeddingDtype?: string;
-  /**
-   * Release the local ONNX pipeline after this many idle milliseconds.
-   * `0` (default) keeps it loaded for the process lifetime.
-   */
-  embeddingIdleTimeoutMs?: number;
   similarityThreshold?: number;
   maxMemories?: number;
   /**
@@ -191,41 +182,8 @@ interface OpenCodeMemConfig {
   showAutoCaptureToasts?: boolean;
   showUserProfileToasts?: boolean;
   showErrorToasts?: boolean;
-  /**
-   * Hex encryption key for local DB at rest (32 or 64 hex chars), or a secret
-   * ref (`env://`, `file://`). Prefer file:// / env:// — never commit keys.
-   * When `databaseEncryptionEnabled` is true and this is unset, the plugin
-   * auto-creates `~/.config/opencode/opencode-mem-db.key` (chmod 600).
-   */
-  databaseEncryptionKey?: string;
-  /** Opt-in local DB encryption at rest (AES-256-GCM by default). */
-  databaseEncryptionEnabled?: boolean;
-  /** Cipher for @tursodatabase/database encryption (default aes256gcm). */
-  databaseEncryptionCipher?:
-    | "aes128gcm"
-    | "aes256gcm"
-    | "aegis256"
-    | "aegis256x2"
-    | "aegis128l"
-    | "aegis128x2"
-    | "aegis128x4";
   /** Automatically clear OpenCode's cached plugin install when a newer npm latest is available. */
   autoUpdate?: boolean;
-  /**
-   * Self-heal a store whose Turso WAL index is stale (a leftover `-tshm`/`-shm`,
-   * often after a foreign writer or beside a 0-byte `-wal`): verify a copy of
-   * the main `.db`, move the *index* sidecars to `<storagePath>/recovery/`, then
-   * retry once. A non-empty `-wal` is left in place so the engine can rebuild
-   * its index from it. Recovery is serialised across processes with
-   * `<storagePath>/recovery/<dbstem>.lock`. Default true.
-   */
-  tursoAutoHeal?: boolean;
-  /**
-   * Open with Turso's experimental `multiprocess_wal` (Unix). Set false for
-   * single-owner mode, so a foreign process fails loudly with "database is
-   * locked" instead of writing into a divergent WAL. Default true.
-   */
-  tursoMultiprocessWal?: boolean;
   compaction?: {
     enabled?: boolean;
     memoryLimit?: number;
@@ -290,7 +248,6 @@ const DEFAULTS: Required<
     | "embeddingApiKey"
     | "embeddingQueryPrefix"
     | "embeddingDocumentPrefix"
-    | "embeddingDtype"
     | "memoryModel"
     | "memoryApiUrl"
     | "memoryApiKey"
@@ -308,15 +265,14 @@ const DEFAULTS: Required<
     | "webServerAuthPassword"
     | "webServerAuthUsername"
     | "webServerApiToken"
-    | "databaseEncryptionKey"
     | "markdownPath"
+    | "sqldAuthToken"
   >
 > & {
   embeddingApiUrl?: string;
   embeddingApiKey?: string;
   embeddingQueryPrefix?: string;
   embeddingDocumentPrefix?: string;
-  embeddingDtype?: string;
   memoryModel?: string;
   memoryApiUrl?: string;
   memoryApiKey?: string;
@@ -345,19 +301,18 @@ const DEFAULTS: Required<
   webServerAuthPassword?: string;
   webServerAuthUsername?: string;
   webServerApiToken?: string;
-  databaseEncryptionKey?: string;
   markdownPath?: string;
+  sqldAuthToken?: string;
   memory?: {
     defaultScope?: "project" | "all-projects";
   };
 } = {
   storagePath: join(DATA_DIR, "data"),
+  sqldUrl: "http://127.0.0.1:8080",
   memoryBackend: "database",
   embeddingModel: "Xenova/nomic-embed-text-v1",
   embeddingDimensions: 768,
   embeddingUseTaskPrefixes: false,
-  embeddingPooling: "mean",
-  embeddingIdleTimeoutMs: 0,
   similarityThreshold: 0.6,
   maxMemories: 10,
   // Deprecated compatibility value; not used for profile selection.
@@ -407,11 +362,7 @@ const DEFAULTS: Required<
   showAutoCaptureToasts: true,
   showUserProfileToasts: true,
   showErrorToasts: true,
-  databaseEncryptionEnabled: false,
-  databaseEncryptionCipher: "aes256gcm",
   autoUpdate: true,
-  tursoAutoHeal: true,
-  tursoMultiprocessWal: true,
   memory: {
     defaultScope: "project",
   },
@@ -473,6 +424,8 @@ function loadConfigFromPaths(paths: string[]): OpenCodeMemConfig {
 }
 
 const GLOBAL_ONLY_REMOTE_PROVIDER_FIELDS: ReadonlyArray<keyof OpenCodeMemConfig> = [
+  "sqldUrl",
+  "sqldAuthToken",
   "embeddingApiUrl",
   "embeddingApiKey",
   "memoryProvider",
@@ -498,8 +451,12 @@ const CONFIG_TEMPLATE = `{
   // OpenCode Memory Plugin Configuration
   // ============================================
   
-  // Storage location for vector database (and search index when using markdown backend)
+  // Local storage for caches and Markdown vault indexes.
   "storagePath": "~/.opencode-mem/data",
+
+  // libSQL server (sqld) holding memories. Set sqldAuthToken if the server requires auth.
+  // "sqldUrl": "http://127.0.0.1:8080",
+  // "sqldAuthToken": "env://SQLD_AUTH_TOKEN",
 
   // Memory persistence: "database" (default) or "markdown"
   // "memoryBackend": "markdown",
@@ -511,46 +468,35 @@ const CONFIG_TEMPLATE = `{
   // ============================================
   // Embedding Model (for similarity search)
   // ============================================
-  // Local = Hugging Face / ONNX via @huggingface/transformers (not Apple MLX).
-  // Remote = set BOTH embeddingApiUrl and embeddingApiKey (OpenAI-compatible /embeddings).
-  
-  // Default: Nomic Embed v1 (768 dimensions, 8192 context, multilingual)
+  // Remote embeddings are REQUIRED — the local ONNX/transformers backend was
+  // removed (its native bindings do not ship for all platforms, e.g. Intel Macs).
+  // Set BOTH embeddingApiUrl and embeddingApiKey (OpenAI-compatible /embeddings).
+
+  // Model served by your embeddings endpoint.
+  // Default: Nomic Embed v1 (768 dimensions)
   "embeddingModel": "Xenova/nomic-embed-text-v1",
+
+  // REQUIRED: OpenAI-compatible embeddings API. The plugin does not work
+  // without them — remote embeddings are the only backend.
+  // "embeddingApiUrl": "https://api.openai.com/v1",
+  // "embeddingApiKey": "env://OPENAI_API_KEY",  // or "sk-..." / "file:///path/to/key"
 
   // Opt-in Nomic task prefixes (search_document: / search_query:). After enabling,
   // re-index existing memories so store and query vectors stay aligned.
   // "embeddingUseTaskPrefixes": true,
 
-  // Local pooling: "mean" (default) | "cls" | "last_token".
-  // Unset → model preset (bge-m3=cls, Qwen3-Embedding=last_token) or "mean".
-  // "embeddingPooling": "mean",
-
   // Custom task prefixes (override presets / Nomic). Explicit "" disables a side.
-  // Changing pooling or prefixes requires re-embedding stored memories.
+  // Changing prefixes requires re-embedding stored memories.
   // "embeddingQueryPrefix": "query: ",
   // "embeddingDocumentPrefix": "passage: ",
 
-  // Optional local ONNX dtype override (e.g. "q8", "fp32"). When unset, transformers.js defaults apply.
-  // "embeddingDtype": "q8",
-
-  // Release the local model after this many ms without embedding work.
-  // 0 (default) keeps it loaded for the whole process lifetime.
-  // "embeddingIdleTimeoutMs": 600000,
-  
   // Auto-detected dimensions (no need to set manually)
   // "embeddingDimensions": 768,
+
+  // Examples (must match what your endpoint serves):
+  // "embeddingModel": "text-embedding-3-small",  // OpenAI, 1536 dims
+  // "embeddingModel": "nomic-embed-text-v1.5",   // Nomic API, 768 dims
   
-  // Other recommended local models:
-  // "embeddingModel": "Xenova/jina-embeddings-v2-base-en",  // 768 dims, English-only, 8192 context
-  // "embeddingModel": "Xenova/jina-embeddings-v2-small-en", // 512 dims, faster, 8192 context
-  // "embeddingModel": "Xenova/all-MiniLM-L6-v2",            // 384 dims, very fast, 512 context
-  // "embeddingModel": "Xenova/all-mpnet-base-v2",           // 768 dims, good quality, 512 context
-  // "embeddingModel": "Xenova/bge-m3",                      // 1024 dims, CLS pooling (auto)
-  // "embeddingModel": "intfloat/multilingual-e5-large",     // 1024 dims, query:/passage: prefixes (auto)
-  
-  // Optional: OpenAI-compatible API for embeddings (both URL and key required)
-  // "embeddingApiUrl": "https://api.openai.com/v1",
-  // "embeddingApiKey": "env://OPENAI_API_KEY",  // or "sk-..." / "file:///path/to/key"
   // "embeddingModel": "text-embedding-3-small",  // 1536 dims, auto-detected
  
   // ============================================
@@ -839,29 +785,9 @@ const CONFIG_TEMPLATE = `{
   // Show toast for error messages
   "showErrorToasts": true,
 
-  // Opt-in encryption at rest for local Turso DB shards (AES-256-GCM).
-  // When enabled without a key, the plugin creates
-  // ~/.config/opencode/opencode-mem-db.key (chmod 600) once.
-  // "databaseEncryptionEnabled": true,
-  // Optional override: "databaseEncryptionKey": "env://OPENCODE_MEM_DB_KEY",
-  // "databaseEncryptionCipher": "aes256gcm",
-
   // Automatically update when installed as opencode-mem@latest (or a range).
   // Pinned versions like opencode-mem@2.26.0 are never auto-updated.
   "autoUpdate": true,
-
-  // Recover a store whose Turso WAL index is stale (a leftover -tshm/-shm, often
-  // beside a 0-byte -wal). The guard copies the main .db, verifies it with
-  // PRAGMA integrity_check, moves the -shm/-tshm index sidecars to
-  // <storagePath>/recovery/, and retries the open once. A non-empty -wal is
-  // never moved, so committed but uncheckpointed transactions are preserved.
-  // Recovery is serialised across processes by <storagePath>/recovery/<db>.lock.
-  "tursoAutoHeal": true,
-
-  // Turso experimental multiprocess_wal (Unix). Set false for single-owner mode:
-  // a second process then fails loudly with "database is locked" instead of
-  // writing into a divergent WAL. See issue #435.
-  "tursoMultiprocessWal": true,
 
   // ============================================
   // User Profile System
@@ -991,10 +917,7 @@ function ensureConfigExists(): void {
 
 ensureConfigExists();
 
-export type EmbeddingPooling = "mean" | "cls" | "last_token";
-
 export type EmbeddingModelPreset = {
-  pooling: EmbeddingPooling;
   /**
    * When present (including `""`), used as the default query/document prefix
    * when the corresponding config key is unset. Omitting both keeps Nomic
@@ -1008,79 +931,30 @@ const QWEN3_EMBEDDING_QUERY_PREFIX =
   "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ";
 
 /**
- * Known local embedding model presets (substring match on `embeddingModel`).
+ * Known embedding model presets (substring match on `embeddingModel`).
  * Explicit config keys always win over these defaults.
  */
 export function getEmbeddingModelPreset(model: string): EmbeddingModelPreset | undefined {
   const id = model.toLowerCase();
   if (id.includes("bge-m3")) {
-    return { pooling: "cls", queryPrefix: "", documentPrefix: "" };
+    return { queryPrefix: "", documentPrefix: "" };
   }
   if (id.includes("multilingual-e5") || id.includes("e5-")) {
-    return { pooling: "mean", queryPrefix: "query: ", documentPrefix: "passage: " };
+    return { queryPrefix: "query: ", documentPrefix: "passage: " };
   }
   if (id.includes("qwen3-embedding")) {
     return {
-      pooling: "last_token",
       queryPrefix: QWEN3_EMBEDDING_QUERY_PREFIX,
       documentPrefix: "",
     };
   }
   if (id.includes("jina-embeddings")) {
-    return { pooling: "mean", queryPrefix: "", documentPrefix: "" };
+    return { queryPrefix: "", documentPrefix: "" };
   }
   if (id.includes("nomic-embed")) {
-    return { pooling: "mean" };
+    return {};
   }
   return undefined;
-}
-
-export function normalizeEmbeddingPooling(value: unknown): EmbeddingPooling {
-  if (value === "mean" || value === "cls" || value === "last_token") return value;
-  throw new Error(
-    `Invalid embeddingPooling config: ${String(value)} (expected "mean" | "cls" | "last_token")`
-  );
-}
-
-/** Dtypes accepted by transformers.js `pipeline({ dtype })`. */
-export const LOCAL_ONNX_DTYPES = [
-  "auto",
-  "fp32",
-  "fp16",
-  "q8",
-  "int8",
-  "uint8",
-  "q4",
-  "bnb4",
-  "q4f16",
-  "q2",
-  "q2f16",
-  "q1",
-  "q1f16",
-] as const;
-
-export type LocalOnnxDtype = (typeof LOCAL_ONNX_DTYPES)[number];
-
-export function normalizeEmbeddingDtype(value: unknown): LocalOnnxDtype | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== "string") {
-    throw new Error(`Invalid embeddingDtype config: ${String(value)}`);
-  }
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  if ((LOCAL_ONNX_DTYPES as readonly string[]).includes(trimmed)) {
-    return trimmed as LocalOnnxDtype;
-  }
-  throw new Error(
-    `Invalid embeddingDtype config: ${trimmed} (expected one of ${LOCAL_ONNX_DTYPES.join(", ")})`
-  );
-}
-
-export function normalizeEmbeddingIdleTimeoutMs(value: number): number {
-  if (!Number.isInteger(value) || value < 0) {
-    throw new Error(`Invalid embeddingIdleTimeoutMs config: ${String(value)}`);
-  }
-  return value;
 }
 
 function getEmbeddingDimensions(model: string): number {
@@ -1321,9 +1195,6 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
   const embeddingPreset = getEmbeddingModelPreset(embeddingModel);
   const embeddingDimensions =
     fileConfig.embeddingDimensions ?? getEmbeddingDimensions(embeddingModel);
-  const embeddingPooling = normalizeEmbeddingPooling(
-    fileConfig.embeddingPooling ?? embeddingPreset?.pooling ?? DEFAULTS.embeddingPooling
-  );
   const embeddingQueryPrefix =
     fileConfig.embeddingQueryPrefix !== undefined
       ? fileConfig.embeddingQueryPrefix
@@ -1332,10 +1203,6 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
     fileConfig.embeddingDocumentPrefix !== undefined
       ? fileConfig.embeddingDocumentPrefix
       : embeddingPreset?.documentPrefix;
-  const embeddingDtype = normalizeEmbeddingDtype(fileConfig.embeddingDtype);
-  const embeddingIdleTimeoutMs = normalizeEmbeddingIdleTimeoutMs(
-    fileConfig.embeddingIdleTimeoutMs ?? DEFAULTS.embeddingIdleTimeoutMs
-  );
   const autoCaptureMaxContextBytes = normalizeAutoCaptureMaxContextBytes(
     fileConfig.autoCaptureMaxContextBytes ?? DEFAULTS.autoCaptureMaxContextBytes
   );
@@ -1363,8 +1230,20 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
     throw new Error('memoryBackend "markdown" requires markdownPath to be set');
   }
 
+  const sqldUrlRaw =
+    typeof fileConfig.sqldUrl === "string" ? fileConfig.sqldUrl.trim() : DEFAULTS.sqldUrl;
+  const sqldUrl = (sqldUrlRaw || DEFAULTS.sqldUrl).replace(/\/+$/, "");
+  if (!/^(https?|wss?|libsql):\/\//i.test(sqldUrl)) {
+    throw new Error(`Invalid sqldUrl config: ${sqldUrl}`);
+  }
+  const sqldAuthToken = fileConfig.sqldAuthToken
+    ? resolveSecretValue(fileConfig.sqldAuthToken)
+    : undefined;
+
   return {
     storagePath: expandPath(fileConfig.storagePath ?? DEFAULTS.storagePath),
+    sqldUrl,
+    sqldAuthToken,
     memoryBackend,
     markdownPath,
     userEmailOverride: fileConfig.userEmailOverride,
@@ -1373,11 +1252,8 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
     embeddingDimensions,
     embeddingUseTaskPrefixes:
       fileConfig.embeddingUseTaskPrefixes ?? DEFAULTS.embeddingUseTaskPrefixes,
-    embeddingPooling,
     embeddingQueryPrefix,
     embeddingDocumentPrefix,
-    embeddingDtype,
-    embeddingIdleTimeoutMs,
     embeddingApiUrl: fileConfig.embeddingApiUrl,
     embeddingApiKey: fileConfig.embeddingApiUrl
       ? resolveSecretValue(fileConfig.embeddingApiKey ?? process.env.OPENAI_API_KEY)
@@ -1503,15 +1379,7 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
     showAutoCaptureToasts: fileConfig.showAutoCaptureToasts ?? DEFAULTS.showAutoCaptureToasts,
     showUserProfileToasts: fileConfig.showUserProfileToasts ?? DEFAULTS.showUserProfileToasts,
     showErrorToasts: fileConfig.showErrorToasts ?? DEFAULTS.showErrorToasts,
-    databaseEncryptionEnabled:
-      fileConfig.databaseEncryptionEnabled ?? DEFAULTS.databaseEncryptionEnabled,
-    // Keep raw ref (env:// / file:// / hex); resolved lazily with optional auto-create.
-    databaseEncryptionKey: fileConfig.databaseEncryptionKey,
-    databaseEncryptionCipher:
-      fileConfig.databaseEncryptionCipher ?? DEFAULTS.databaseEncryptionCipher,
     autoUpdate: fileConfig.autoUpdate ?? DEFAULTS.autoUpdate,
-    tursoAutoHeal: fileConfig.tursoAutoHeal ?? DEFAULTS.tursoAutoHeal,
-    tursoMultiprocessWal: fileConfig.tursoMultiprocessWal ?? DEFAULTS.tursoMultiprocessWal,
     memory: {
       defaultScope: fileConfig.memory?.defaultScope ?? DEFAULTS.memory.defaultScope,
     },
@@ -1635,6 +1503,19 @@ export function initConfig(directory: string): void {
   delete projectOverrides.autoCleanupRetentionDays;
   const merged: OpenCodeMemConfig = { ...globalConfig, ...projectOverrides };
   CONFIG = buildConfig(merged);
+  if (!CONFIG.embeddingApiUrl || !CONFIG.embeddingApiKey) {
+    const missing = [
+      !CONFIG.embeddingApiUrl ? "embeddingApiUrl" : null,
+      !CONFIG.embeddingApiKey ? "embeddingApiKey" : null,
+    ].filter(Boolean);
+    console.error(
+      `opencode-mem: remote embeddings are required — ${missing.join(", ")} is missing. ` +
+        `Set both in the global config (${CONFIG_FILES[0]}). ` +
+        `The local ONNX embedding backend was removed because its native bindings ` +
+        `do not ship for all platforms (e.g. Intel Macs). ` +
+        `Memory capture and search stay disabled until this is fixed.`
+    );
+  }
 }
 
 export function isConfigured(): boolean {

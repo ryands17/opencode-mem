@@ -59,6 +59,7 @@ const configUrl = new URL("../../src/config.js", import.meta.url).href;
 mock.module(configUrl, () => ({
   CONFIG: {
     storagePath: cfg.storagePath,
+    sqldUrl: cfg.sqldUrl ?? "http://127.0.0.1:8080",
     maxMemories: 100,
     similarityThreshold: 0.0,
     memoryDbShardSize: 1000,

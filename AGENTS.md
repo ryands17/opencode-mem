@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for coding agents working on **opencode-mem** — a persistent memory plugin for OpenCode (Turso/libSQL vector search, auto-capture, web UI).
+Guidance for coding agents working on **opencode-mem** — a persistent memory plugin for OpenCode (libSQL server / sqld vector search, remote embeddings, auto-capture, web UI).
 
 ## Stack & layout
 
@@ -15,7 +15,7 @@ Guidance for coding agents working on **opencode-mem** — a persistent memory p
 bun install
 bun test
 bun run typecheck
-bun run check          # format + lint + typecheck
+bun run quality       # format + lint + typecheck
 bun run build
 bun run web:dev        # web UI only
 ```
@@ -77,7 +77,7 @@ chore(deps): bump the minor-and-patch group across 2 directories
 
 - Do **not** put Conventional Commit syntax in the PR body
 - Base branch: `main`
-- Before opening: `bun test`, `bun run typecheck`, and `bun run check` when code changes
+- Before opening: `bun test`, `bun run typecheck`, and `bun run quality` when code changes
 - Update README / docs when behavior or contribution process changes
 - If the PR is not squashed and multiple commits merge: **every** commit on the branch must still be Conventional Commits
 
@@ -87,7 +87,7 @@ chore(deps): bump the minor-and-patch group across 2 directories
 - Keep diffs focused on the requested change
 - Prefer existing libraries and utilities already in the tree
 - Do not commit secrets, local data under `data/`, or `node_modules`
-- Intel Mac (`darwin/x64`) is unsupported (Turso / onnxruntime bindings)
+- Needs a running sqld server (`sqldUrl`, default `http://127.0.0.1:8080`) and remote embeddings (`embeddingApiUrl` + `embeddingApiKey`); no native bindings, so Intel Mac (`darwin/x64`) is supported
 
 ## When unsure
 

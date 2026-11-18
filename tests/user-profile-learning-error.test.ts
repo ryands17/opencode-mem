@@ -50,12 +50,10 @@ mock.module(${JSON.stringify(configUrl)}, () => ({
     opencodeProvider: "opencode-go",
     opencodeModel: "deepseek-v4-flash",
     showUserProfileToasts: false,
-    // The learning service now takes the cross-process lock before analysis.
-    // Without a storagePath the lock would coordinate through the process cwd
-    // (old FS lock) or fail to place its coordination DB (Turso lock).
-    // A temp dir keeps this scenario hermetic; the error assertions below are
-    // unchanged.
+    // The learning service takes a cross-process lock in sqld before analysis.
+    // sqldUrl is required; without it the service skips before calling the provider.
     storagePath: ${JSON.stringify(dir)},
+    sqldUrl: "http://127.0.0.1:8080",
   },
 }));
 

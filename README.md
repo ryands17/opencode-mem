@@ -11,19 +11,19 @@
 
 Languages: **🇬🇧** | [🇩🇪](./.github/i18n/README.de.md) | [🇨🇳](./.github/i18n/README.zh.md) | [🇸🇦](./.github/i18n/README.ar.md) | [🇹🇷](./.github/i18n/README.tr.md) | [🇳🇱](./.github/i18n/README.nl.md)
 
-A persistent memory system for AI coding agents that enables long-term context retention across sessions using local vector database technology.
+A persistent memory system for AI coding agents that enables long-term context retention across sessions using vector search backed by a libSQL server (sqld).
 
 ## Core Features
 
-- **Local database:** embedded Turso/libSQL with native vector search, stored under `storagePath`. No separate vector database.
+- **Database:** a libSQL server (`sqld`) holds memories with native vector search; no separate vector database and no native bindings.
 - **Intelligent prompt-based memory extraction (auto-capture):** when a session goes idle, a background AI request turns the technical work into persistent project memories.
 - **Automatic recall:** relevant memories and the user profile are injected into the model's context (`chatMessage`).
 - **User profile learning:** a cross-project summary of your preferences, patterns and workflows.
 - **Memory hygiene:** smart deduplication, optional update-on-capture, and optional dreaming consolidation with recoverable trash.
 - **Multi-provider AI support:** any provider configured in OpenCode (`opencodeProvider` / `opencodeModel`), or a manual API: OpenAI Chat Completions, OpenAI Responses, Anthropic, MiniMax, OrcaRouter, Atlas Cloud, Cheaper Inference, API Route, Runcrate, CloudGPU.
-- **Embeddings:** 12+ local embedding models on CPU (no GPU needed) or any OpenAI-compatible embeddings API.
+- **Embeddings:** any OpenAI-compatible embeddings API (required); no local model download and no GPU needed.
 - **Full-featured web UI:** unified memory–prompt timeline, user profile, skill library, Markdown vault and health stats, with optional HTTP Basic Auth.
-- **Privacy:** `<private>` tags, credential redaction before capture, and optional encryption at rest.
+- **Privacy:** `<private>` tags and credential redaction before capture.
 - **Portability:** optional Markdown vault backend, and `memory` tool `export` / `import` / `migrate` for moved or copied projects.
 
 ## Memory credential redaction
@@ -33,7 +33,7 @@ the plugin removes recognizable credentials from user text, assistant text, tool
 preserved tool-result evidence and prior-memory context. Pending prompts/evidence are sanitized
 before persistence; generated summaries and tags are sanitized again before embedding and new
 memory writes. The explicit memory `add` tool uses the same write boundary. This applies to
-both Turso and plugin-created Markdown memories, without an extra model call or dependency.
+both database-backed and plugin-created Markdown memories, without an extra model call or dependency.
 
 Recognized formats include supported GitHub tokens, OpenAI/Anthropic/OpenRouter/Google API key
 shapes, Slack tokens, AWS access key IDs, bearer credentials and PEM private keys, plus
@@ -59,63 +59,66 @@ and rotate any credential already disclosed.
 
 ## Prerequisites
 
-This plugin uses embedded Turso (`@tursodatabase/database`) with `F32_BLOB` vectors and exact cosine search via `vector_distance_cos`. No separate vector database or custom SQLite build is required.
+opencode-mem stores memories in a **libSQL server (`sqld`)** reached over HTTP/WebSocket through the pure-JS `@libsql/client/web` transport. It uses `F32_BLOB` vectors and exact cosine search via `vector_distance_cos`. There are **no native bindings or local ML runtime**, so the plugin runs anywhere Bun runs — including Intel Macs (`darwin/x64`). You need a running sqld server (see [Getting Started](#getting-started)) and a remote embeddings endpoint.
 
 **Recommended runtime:**
 
 - Bun
 - Standard OpenCode plugin environment
-- Internet access on first use if you use the default local embedding model, because the model is downloaded by `@huggingface/transformers`.
+- Docker (or another way to run a `sqld` server) for the memory database
+- A remote OpenAI-compatible embeddings API and key (`embeddingApiUrl` + `embeddingApiKey`)
 - For source/development installs, run `bun install` before building or testing. The published plugin package installs its runtime dependencies automatically through OpenCode.
 
-**CI-tested platforms:** Linux, Windows, and macOS 15 / macOS 26 on Apple Silicon (`darwin/arm64`). **Intel Mac (`darwin/x64`) is not supported** — `@tursodatabase/database` and fixed `onnxruntime-node` releases ship no x64 native binding. Older macOS releases are not excluded by that matrix; they are simply outside the current GitHub-hosted runner set.
+**CI-tested platforms:** Linux, Windows, macOS on Apple Silicon (`darwin/arm64`) and Intel (`darwin/x64`). sqld and remote embeddings have no platform-specific native bindings.
 
 **Notes:**
 
-- Vector embeddings are stored and searched directly in Turso; inserts store `F32_BLOB` vectors for exact cosine ranking.
-- Vector search uses exact cosine distance via `vector_distance_cos` (no DiskANN / approximate index), with optional keyword hybrid ranking when a query string is provided (`@tursodatabase/database` does not ship FTS5).
+- Vector embeddings are stored and searched directly in sqld; inserts store `F32_BLOB` vectors for exact cosine ranking.
+- Vector search uses exact cosine distance via `vector_distance_cos` (no DiskANN / approximate index), with optional keyword hybrid ranking when a query string is provided.
 - Session lookups use an indexed `session_id` column (backfilled from `metadata.sessionID` on schema v2).
 - Auto-capture and user profile learning require an AI provider that can return structured/tool-call output. Memory search/add/list still work without auto-capture provider configuration.
+- All memories for an installation live in one sqld database, logically partitioned by container tag (project/user). `storagePath` holds only local caches and Markdown vault indexes.
 
 ### Hardware / resource expectations
 
-opencode-mem does **not** require a GPU. Local embeddings run on CPU via `@huggingface/transformers` and ONNX (there is no MLX backend). Extra VRAM is not needed.
+opencode-mem does **not** require a GPU or a local ML runtime — embeddings come from your configured remote API, so no models are downloaded or kept in memory.
 
-| Workload                                                      | Typical extra resources                                                                                                                                                                                                                                                 |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Local embeddings** (default `Xenova/nomic-embed-text-v1`)   | About **0.5–2 GB RAM** while the model is loaded, depending on the Hugging Face id you pick. First use downloads the model; disk cache lives under `{storagePath}/.cache` (default `~/.opencode-mem/data/.cache`) and is often **hundreds of MB to ~1–2 GB** per model. |
-| **Remote embeddings** (`embeddingApiUrl` + `embeddingApiKey`) | Negligible local ML RAM — only plugin + Turso overhead.                                                                                                                                                                                                                 |
-| **Database / plugin**                                         | Turso/libSQL on disk under `storagePath`. Size grows with how many memories you store, not with GPU memory.                                                                                                                                                             |
+| Workload                                               | Typical extra resources                                                                                               |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| **Embeddings** (`embeddingApiUrl` + `embeddingApiKey`) | Negligible local RAM — just the plugin; embedding work happens at the API.                                            |
+| **Database / plugin**                                  | Memories live in the sqld server. Local disk use under `storagePath` is limited to caches and Markdown vault indexes. |
 
-Platform limits above still apply (no Intel Mac `darwin/x64`; use Apple Silicon, Linux, Windows, or a remote embedding endpoint). See [Choosing / configuring embeddings](#choosing--configuring-embeddings).
+See [Choosing / configuring embeddings](#choosing--configuring-embeddings).
 
 ### Upgrading from legacy SQLite shards
 
-Startup recovers interrupted re-embed swaps, converts libSQL DiskANN indexes to the current Turso engine, and then verifies or upgrades the legacy shard schema. Engine conversion runs even when a store already has a completed legacy migration marker, and preserves stored vectors without re-embedding. Each converted database is backed up as `<database>.pre-tursodb-<timestamp>.bak`.
+Earlier releases kept each memory shard in an embedded Turso database file under `storagePath`. That engine (and its `multiprocess_wal`, WAL-index recovery, DiskANN conversion and file-based migration markers) is no longer used: memories now live in a single sqld server and are partitioned by container tag. Starting a newer plugin against an old installation does not convert those old files — start sqld, point `sqldUrl` at it, and import your memories with the `memory` tool's `export` / `import` commands if you need to carry them over.
 
-On macOS and Linux, multiple OpenCode sessions can share the same `storagePath` via Turso’s experimental `multiprocess_wal` (every process must use the same mode — restart all sessions after upgrading). On Windows the engine rejects that flag, so only one OpenCode session can own the memory databases at a time.
-
-`tursoMultiprocessWal: false` opens in single-owner mode instead: other processes then fail with `database is locked` rather than sharing the store. That is the safer choice if non-plugin tools touch the same files, because a _writing_ foreign SQLite process makes Turso’s WAL index stale and its own next write is silently lost. `tursoAutoHeal` (default `true`) moves a store’s `-shm`/`-tshm` index sidecars into `storagePath/recovery/<db>-<timestamp>/` and retries once when an open fails with a stale WAL index, after verifying a copy of the main database. A non-empty `-wal` is never moved, so committed but uncheckpointed transactions survive; only an absent or 0-byte `-wal` is removed. Concurrent sessions serialise healing through `storagePath/recovery/<db>.lock`.
-
-On first startup after upgrading, opencode-mem automatically migrates existing memory shard databases to native Turso/libSQL vector format:
-
-- Each shard is backed up as `<shard>.db.legacy.bak` before rewrite
-- Progress is tracked per shard in `<shard>.db.turso-migrate.json`
-- A global marker `.turso-migrated` is written only after all shards verify successfully
-- Normal inserts and deletes do not invalidate a completed shard migration; startup still checks that its vectors are readable and match its stored dimensions
-- Do not run multiple OpenCode instances against the same `storagePath` during migration; a lock file (`.turso-migrate.lock`) prevents concurrent migration
-- Manual dimension migrations use `.turso-operation.lock`; other plugin processes reject new memory writes until the migration finishes
-- Locks expire after 30 minutes without a progress timestamp update (or file modification time if the timestamp is unavailable), even if the owning process is alive. This lease uses wall-clock time: a forward clock step greater than 30 minutes can expire a progressing operation early; a backward step or future-dated lock can extend an inert lock's life. Locks carry a unique acquisition id, and stale cleanup only removes the exact file it inspected. Migrations heartbeat as they progress and abort if they discover that ownership was lost. Stale-lock cleanup is logged for diagnosis
-
-If migration is interrupted, the next startup resumes from the backup automatically.
-
-If a shard becomes incompatible (for example after changing `embeddingDimensions`), writes are blocked and the original database is left untouched. Use the Web UI's re-embed migration to build and verify a replacement before it is swapped into place. The previous shard remains available as `<shard>.db.pre-reembed-<pid>-<timestamp>.bak`.
+If stored vectors become incompatible with the configured embeddings (for example after changing `embeddingDimensions`), writes to that logical shard are blocked. Use the Web UI's re-embed migration to rebuild and verify a replacement; the previous shard is archived in sqld before the swap. Pointing `sqldUrl` at a different server or database also gives you a clean store without touching the old one.
 
 ## Schema migrations
 
-Local Turso shards and auxiliary databases (`metadata.db`, `user-prompts.db`, `user-profiles.db`, `ai-sessions.db`) are upgraded with ordered `PRAGMA user_version` migrations in `src/services/turso/schema-migrations.ts`. Migrations are idempotent: starting the plugin applies only pending versions.
+Memory tables in sqld are upgraded with ordered, per-label version migrations tracked in the `_opencode_mem_schema_versions` table (implemented in `src/services/turso/schema-migrations.ts`). Auxiliary data (skills, user prompts, user profiles, AI sessions) uses the same mechanism with its own label. Migrations are idempotent: starting the plugin applies only pending versions.
 
 ## Getting Started
+
+### Set up sqld
+
+Memories live in a [libSQL server (`sqld`)](https://github.com/tursodatabase/libsql). The quickest way to run one is Docker with a named volume so data survives container restarts:
+
+```bash
+docker run -d --name opencode-mem-sqld \
+  -p 8080:8080 \
+  -v opencode-mem-sqld-data:/var/lib/sqld \
+  -e SQLD_NODE=primary \
+  ghcr.io/tursodatabase/libsql-server:latest
+```
+
+Alternatively use [`scripts/sqld-compose.yml`](scripts/sqld-compose.yml): `docker compose -f scripts/sqld-compose.yml up -d`.
+
+Confirm the server is healthy at `http://127.0.0.1:8080/health`. The plugin defaults to `sqldUrl: "http://127.0.0.1:8080"`, so this local setup needs no config change. For a remote server, set `sqldUrl` and, if it requires authentication, `sqldAuthToken` (accepts `env://…` and `file://…` references).
+
+Keep the named volume when upgrading or recreating the container — removing it deletes all memories. Back it up (or run `memory export`) before any destructive operation. You also need a remote embeddings endpoint; see [Choosing / configuring embeddings](#choosing--configuring-embeddings).
 
 For OpenCode v2, add the package to the native `plugins` list:
 
@@ -172,15 +175,7 @@ Point at the package root, not at `dist/` or a single file. OpenCode resolves a 
 
 ### Optional database encryption at rest
 
-Enable AES-256-GCM encryption for local Turso shards in `~/.config/opencode/opencode-mem.jsonc`:
-
-```jsonc
-{
-  "databaseEncryptionEnabled": true,
-}
-```
-
-On first start the plugin creates `~/.config/opencode/opencode-mem-db.key` (32-byte hex key, `chmod 600`) and migrates existing plaintext shards. Override with `"databaseEncryptionKey": "env://OPENCODE_MEM_DB_KEY"` or `"file://~/path/to.key"` if you manage the key yourself. Losing the key means the encrypted databases cannot be opened. `databaseEncryptionCipher` selects the cipher: `aes256gcm` (default), `aes128gcm`, `aegis256`, `aegis256x2`, `aegis128l`, `aegis128x2` or `aegis128x4`.
+The plugin no longer manages database encryption itself — the old `databaseEncryptionEnabled`, `databaseEncryptionKey` and `databaseEncryptionCipher` options have been removed. Memories live in your sqld server, so protect them at that layer: run sqld on an encrypted volume, restrict network access to `sqldUrl`, and set `sqldAuthToken` when the server requires authentication. The token accepts `env://…` and `file://…` references so it does not have to sit in plaintext in the config file.
 
 **Windows:** use `%USERPROFILE%\.config\opencode\opencode.json` (for example `C:\Users\<you>\.config\opencode\opencode.json`). This plugin does **not** read `%APPDATA%` or `%LOCALAPPDATA%` for its OpenCode plugin entry — put the file under `.config\opencode` in your user profile, then restart OpenCode. If the plugin does not appear, confirm that path and restart again.
 
@@ -306,7 +301,9 @@ Commonly tuned top-level options:
 
 | Option                                                                | Default                         | What it does                                                                                                                    |
 | --------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `storagePath`                                                         | `"~/.opencode-mem/data"`        | Where the memory databases live.                                                                                                |
+| `sqldUrl`                                                             | `"http://127.0.0.1:8080"`       | URL of the libSQL server (`sqld`) that holds memories.                                                                          |
+| `sqldAuthToken`                                                       | _(empty)_                       | Auth token for sqld; accepts `env://…` / `file://…` references.                                                                 |
+| `storagePath`                                                         | `"~/.opencode-mem/data"`        | Local caches and Markdown vault indexes; memories themselves live in sqld.                                                      |
 | `webServerEnabled` / `webServerPort` / `webServerHost`                | `true` / `4747` / `"127.0.0.1"` | Web UI server switch, port and bind address.                                                                                    |
 | `autoCaptureEnabled`                                                  | `true`                          | Summarize idle sessions into memories (needs a provider, see [Auto-Capture AI Provider](#auto-capture-ai-provider)).            |
 | `similarityThreshold` / `maxMemories`                                 | `0.6` / `10`                    | Minimum similarity score and maximum number of results for memory search.                                                       |
@@ -320,7 +317,7 @@ Profile context limits are set by `userProfileInjectPreferences` (default `5`), 
 
 ### Markdown vault backend (`memoryBackend`)
 
-By default memories live only in Turso under `storagePath`. Optionally set a **generic Markdown folder** as the source of truth (Obsidian/Raneto-compatible plain `.md` files — not an Obsidian-specific integration):
+By default memories live only in sqld. Optionally set a **generic Markdown folder** as the source of truth (Obsidian/Raneto-compatible plain `.md` files — not an Obsidian-specific integration):
 
 ```jsonc
 {
@@ -333,13 +330,13 @@ Plugin-created vault files preserve capture provenance (`promptId`, `sessionID`,
 
 | Key             | Default      | What it does                                                                                                                                       |
 | --------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `memoryBackend` | `"database"` | `"database"` keeps content in Turso. `"markdown"` uses all `.md` files under `markdownPath` as source of truth.                                    |
+| `memoryBackend` | `"database"` | `"database"` keeps content in sqld. `"markdown"` uses all `.md` files under `markdownPath` as source of truth.                                     |
 | `markdownPath`  | —            | Required when `memoryBackend` is `"markdown"`. Absolute or `~/…` path to the vault folder. No separate memory subfolder — the path _is_ the store. |
 
 When Markdown mode is on:
 
 - Plugin-created memories are written as `{id}.md` with YAML frontmatter + body.
-- Existing notes in the folder (any Markdown page style) are imported/indexed; Turso is only a rebuildable semantic-search index.
+- Existing notes in the folder (any Markdown page style) are imported/indexed; sqld is only a rebuildable semantic-search index.
 - File adds/edits/deletes are watched and re-indexed; the Web UI shows a **Markdown** sidebar page (status, file list, reindex) only in this mode.
 - Switching to Markdown rebuilds the index from the folder. DB-only rows without a matching file are dropped only after a readable, complete scan of a nonempty vault. Export with `memory export` first if you need to keep old database memories.
 - Reconciliation skips deletion and warns when the vault is missing, unreadable, only partially scanned or processed, or contains no Markdown files; existing indexed memories are retained. Restore or fix the vault, then reindex. To intentionally remove the final file's indexed memory, explicitly delete that memory through the tool or Web UI.
@@ -417,38 +414,21 @@ work when it is false (manual-only mode). Soft-deleted rows are hard-purged afte
 
 ### Choosing / configuring embeddings
 
-Embeddings power similarity search for memories and the user profile. Configure them in the same file (`~/.config/opencode/opencode-mem.jsonc`). There is **no MLX backend** — local embeddings use `@huggingface/transformers` with ONNX, not Apple MLX.
+Embeddings power similarity search for memories and the user profile. Configure them in `~/.config/opencode/opencode-mem.jsonc`. **Remote embeddings are the only backend** — the local ONNX/transformers model was removed because its native bindings do not ship for every platform. Both `embeddingApiUrl` and `embeddingApiKey` are required: the plugin shows a startup error and refuses to store or search memories if either is missing.
 
-**Local (default):** set only `embeddingModel`. On first use the model is downloaded from Hugging Face and cached under `{storagePath}/.cache` (default `~/.opencode-mem/data/.cache`). The weights stay resident for the life of the host process; set `embeddingIdleTimeoutMs` to release them after that many idle milliseconds, and the next memory operation re-warms them from the local cache (about a second, not a re-download).
+**Remote (OpenAI-compatible):** the plugin calls `{embeddingApiUrl}/embeddings` with a Bearer token. `embeddingApiKey` accepts the same secret formats as `memoryApiKey` (`literal`, `env://…`, `file://…`). The endpoint must return vectors with a consistent dimension; set `embeddingDimensions` if your endpoint does not report it in a built-in preset.
 
-**Remote (OpenAI-compatible):** set both `embeddingApiUrl` and `embeddingApiKey`. The plugin then calls `{embeddingApiUrl}/embeddings` with a Bearer token. `embeddingApiKey` accepts the same secret formats as `memoryApiKey` (`literal`, `env://…`, `file://…`).
+| Key                        | Role                                                                                                                             |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `embeddingApiUrl`          | **Required.** Base URL of an OpenAI-compatible embeddings API (no trailing path beyond `/v1`).                                   |
+| `embeddingApiKey`          | **Required.** API key for that endpoint; accepts `env://…` / `file://…` references.                                              |
+| `embeddingModel`           | Model name served by your endpoint. Default: `Xenova/nomic-embed-text-v1` (also used for dimension lookup).                      |
+| `embeddingDimensions`      | Optional override; usually omit — dimensions are looked up from a built-in map.                                                  |
+| `embeddingQueryPrefix`     | Prefix for query-task embeddings. Unset → model preset or Nomic when `embeddingUseTaskPrefixes` is true. Explicit `""` disables. |
+| `embeddingDocumentPrefix`  | Prefix for document-task embeddings (same resolution rules as `embeddingQueryPrefix`).                                           |
+| `embeddingUseTaskPrefixes` | Opt-in Nomic `search_query:` / `search_document:` prefixes when custom/preset prefixes are unset. Default `false`.               |
 
-| Key                        | Role                                                                                                                                             |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `embeddingModel`           | Hugging Face id (local) or API model name (remote). Default: `Xenova/nomic-embed-text-v1`                                                        |
-| `embeddingDimensions`      | Optional override; usually omit — dimensions are looked up from a built-in map                                                                   |
-| `embeddingPooling`         | Local pooling: `"mean"` (default), `"cls"`, or `"last_token"`. Unset → small known-model preset or `"mean"`                                      |
-| `embeddingQueryPrefix`     | Prefix for query-task embeddings. Unset → model preset or Nomic when `embeddingUseTaskPrefixes` is true. Explicit `""` disables                  |
-| `embeddingDocumentPrefix`  | Prefix for document-task embeddings (same resolution rules as `embeddingQueryPrefix`)                                                            |
-| `embeddingUseTaskPrefixes` | Opt-in Nomic `search_query:` / `search_document:` prefixes when custom/preset prefixes are unset. Default `false`                                |
-| `embeddingDtype`           | Optional local ONNX dtype override (e.g. `"q8"`, `"fp32"`). When set, passed to transformers.js `pipeline({ dtype })`                            |
-| `embeddingIdleTimeoutMs`   | Release the local model after this many idle milliseconds (e.g. `600000` for 10 minutes). `0` (default) keeps it loaded for the process lifetime |
-| `embeddingApiUrl`          | Base URL for an OpenAI-compatible embeddings API (no trailing path beyond `/v1`)                                                                 |
-| `embeddingApiKey`          | API key for that endpoint (required together with `embeddingApiUrl`)                                                                             |
-
-Recommended local models:
-
-| Model                                | Dims | Notes                                             |
-| ------------------------------------ | ---- | ------------------------------------------------- |
-| `Xenova/nomic-embed-text-v1`         | 768  | Default; multilingual, 8192 context; mean pooling |
-| `Xenova/jina-embeddings-v2-base-en`  | 768  | English-only, 8192 context                        |
-| `Xenova/jina-embeddings-v2-small-en` | 512  | Faster, 8192 context                              |
-| `Xenova/all-MiniLM-L6-v2`            | 384  | Very fast, 512 context                            |
-| `Xenova/all-mpnet-base-v2`           | 768  | Good quality, 512 context                         |
-| `Xenova/bge-m3`                      | 1024 | Multilingual; auto CLS pooling                    |
-| `intfloat/multilingual-e5-large`     | 1024 | Auto `query:` / `passage:` prefixes               |
-
-Example — remote OpenAI embeddings:
+Example — OpenAI:
 
 ```jsonc
 {
@@ -458,19 +438,17 @@ Example — remote OpenAI embeddings:
 }
 ```
 
-Example — local bge-m3 (pooling defaults to CLS via preset; override if needed):
+Example — a self-hosted endpoint:
 
 ```jsonc
 {
-  "embeddingModel": "Xenova/bge-m3",
-  // "embeddingPooling": "cls",
-  // "embeddingDtype": "q8",
+  "embeddingApiUrl": "http://127.0.0.1:8765/v1",
+  "embeddingApiKey": "local-dev-key",
+  "embeddingModel": "nomic-embed-text-v1.5",
 }
 ```
 
-Changing `embeddingModel`, dimensions, pooling, or task prefixes can require re-embedding stored memories so store and query vectors stay aligned. Prefer picking a model (and pooling/prefix settings) once and sticking with them for a given data directory.
-
-**Unsupported — Intel Mac (`darwin/x64`):** Local persistence requires `@tursodatabase/database`, which does not publish an Intel Mac native binding. Fixed `onnxruntime-node` releases (`1.24.1+`, including the pinned `1.31.1`) also lack darwin/x64. Use an Apple Silicon Mac, Linux, or Windows, or a remote endpoint via `embeddingApiUrl` + `embeddingApiKey` (example above). On supported platforms, `opencode-mem` pins `onnxruntime-node@1.31.1` (Ort::Env teardown fix from `1.24.1` / #225) and loads transformers through a CJS resolve shim so OpenCode nested installs keep that binding. Transformers is resolved to an absolute path before that shim is installed so OpenCode's Bun `--compile` host does not fail with `Cannot find module '@huggingface/transformers' from ''`. After upgrading, clear OpenCode's nested plugin cache (`~/.cache/opencode/packages/opencode-mem@*`) and reinstall.
+Changing `embeddingModel`, dimensions, or task prefixes can require re-embedding stored memories so store and query vectors stay aligned. Prefer picking a model (and prefix settings) once and sticking with it for a given sqld database.
 
 ### Memory Scope
 
@@ -747,7 +725,8 @@ Troubleshooting:
 - For models that reject forced tool calls (`tool_choice: "required"`, e.g. some thinking modes), add `"forceToolChoice": false` when using `openai-chat` / `orcarouter` / `atlas-cloud` / `cheaper-inference` / `api-route` / `runcrate` / `cloudgpu` / `standardcompute`.
 - For `opencodeProvider` / `opencodeModel` (e.g. DeepSeek V4 thinking), OpenCode still sends forced `tool_choice` for structured output. opencode-mem disables thinking on the internal `opencode-mem-structured` agent (and re-applies that in `chat.params` after variant merge) so auto-capture and profile learning can complete. Your interactive chat agent is unchanged. If capture still fails with a thinking/`tool_choice` error, pick a non-thinking model for `opencodeModel` or configure a complete manual fallback (`memoryModel` + `memoryApiUrl`).
 - **`opencode-claude-auth` / Claude Code:** auto-capture uses OpenCode with your authenticated `anthropic` provider. Forced `format: json_schema` often loops with Claude-auth, so opencode-mem uses an auth-preserving **text-JSON** path for `opencodeProvider: "anthropic"` (no forced `StructuredOutput` tools; reply is parsed with Zod). A step watchdog still aborts runaway internal sessions after 2 steps. If capture still fails, configure a complete manual Anthropic API-key fallback (`memoryProvider: "anthropic"` + `memoryModel` + `memoryApiUrl` + `memoryApiKey`) — Claude Pro/Max OAuth cannot be reused outside OpenCode.
-- **Unsupported platforms:** Intel Mac (`darwin/x64`) is not supported — `@tursodatabase/database` and fixed `onnxruntime-node` releases (pinned `1.31.1`) ship no x64 native binding. Use Apple Silicon, Linux, or Windows, or a remote embedding endpoint via `embeddingApiUrl` + `embeddingApiKey`. MLX is not supported.
+- **Database connection errors:** confirm sqld is running and `sqldUrl` points at it (`http://127.0.0.1:8080` by default), and set `sqldAuthToken` if the server requires authentication.
+- **"Remote embeddings are required" error:** set both `embeddingApiUrl` and `embeddingApiKey`; there is no local embedding backend.
 
 ## Public Subpath Exports
 
@@ -790,10 +769,10 @@ Build and test locally:
 bun install
 bun run build
 bun test
-bun run check
+bun run quality
 ```
 
-`bun run check` runs `format:check`, `lint` and `typecheck`; `bun run format` rewrites formatting.
+`bun run quality` runs `format:check`, `lint` and `typecheck`; `bun run format` rewrites formatting.
 
 The [docs](https://opencode-mem.zhafron.my.id/docs/) are generated from this README and the translations under `.github/i18n/`; the [landing page](https://opencode-mem.zhafron.my.id) lives in `github-site/src/`. Every README heading must be mapped to a docs page in `github-site/docs-map.json`, otherwise the site build fails. Build the site locally with `cd github-site && bun install && bun run build`.
 

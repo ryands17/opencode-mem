@@ -127,9 +127,11 @@ export class MemoryPortabilityService {
 
     const memories: ExportedMemory[] = [];
     for (const shard of shards) {
-      if (!existsSync(shard.dbPath)) continue;
       const db = await tursoConnectionManager.getConnection(shard.dbPath);
-      const rows = await tursoVectorSearch.getAllMemories(db);
+      const rows = await db.all(
+        `SELECT * FROM memories WHERE deleted_at IS NULL AND container_tag = ? ORDER BY created_at DESC`,
+        [project.tag]
+      );
       for (const row of rows) {
         const exported = rowToExportedMemory(row);
         if (exported) memories.push(exported);
@@ -246,6 +248,12 @@ export class MemoryPortabilityService {
     const document = validated.data;
     const target = getProjectTagInfo(options.currentDirectory);
     const { scope, hash } = extractScopeFromContainerTag(target.tag);
+    const idCheckDb = await tursoConnectionManager.getConnection("import-id-check");
+    const existingIds = new Set(
+      (await idCheckDb.all("SELECT id FROM memories WHERE deleted_at IS NULL")).map((row) =>
+        String(row.id)
+      )
+    );
 
     // Pre-scan for ID conflicts across all project shards of the target.
     const targetShards = await tursoShardManager.getAllShards(scope, hash);
@@ -254,9 +262,11 @@ export class MemoryPortabilityService {
 
     for (const memory of document.memories) {
       for (const shard of targetShards) {
-        if (!existsSync(shard.dbPath)) continue;
         const db = await tursoConnectionManager.getConnection(shard.dbPath);
-        const existing = await tursoVectorSearch.getMemoryById(db, memory.id);
+        const existing = await db.get(
+          `SELECT id FROM memories WHERE id = ? AND container_tag = ? AND deleted_at IS NULL`,
+          [memory.id, target.tag]
+        );
         if (existing) {
           rejected.push({
             id: memory.id,
@@ -307,6 +317,11 @@ export class MemoryPortabilityService {
               })
             : undefined;
 
+        // Every project shares one sqld database, so an exported id may already
+        // exist in another project. Scope the imported id to this target.
+        const importedId = existingIds.has(memory.id) ? `${memory.id}_${hash}` : memory.id;
+        existingIds.add(importedId);
+
         const metadata = {
           ...(memory.metadata ?? {}),
           source: "import",
@@ -314,11 +329,12 @@ export class MemoryPortabilityService {
           exportSchemaVersion: document.schemaVersion,
           originalContainerTag: document.source.containerTag,
           originalProjectPath: document.source.projectPath,
+          ...(importedId !== memory.id ? { originalId: memory.id } : {}),
         };
 
         prepared.push({
           record: {
-            id: memory.id,
+            id: importedId,
             content: memory.content,
             vector,
             tagsVector,

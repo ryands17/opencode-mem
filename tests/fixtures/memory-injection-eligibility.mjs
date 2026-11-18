@@ -7,8 +7,7 @@ const projectTag = "opencode_project_" + projectHash;
 const sessionID = "current-session";
 const config = {
   storagePath: process.argv[2],
-  databaseEncryptionEnabled: false,
-  tursoMultiprocessWal: false,
+  sqldUrl: "http://127.0.0.1:8080",
   injectProfile: true,
   chatMessage: {
     enabled: true,
@@ -27,7 +26,8 @@ const config = {
   autoUpdate: { enabled: false },
   opencodeModel: "inherit",
 };
-const shards = [0, 1].map((index) => ({
+// One logical shard: all dbPath keys now alias a single sqld database.
+const shards = [0].map((index) => ({
   id: index + 1,
   scope: "project",
   scopeHash: projectHash,
@@ -91,7 +91,10 @@ mock.module(moduleUrl("services/web-server"), () => ({
   WebServer: class {},
 }));
 mock.module(moduleUrl("services/auto-update"), () => ({ startAutoUpdate() {} }));
-globalThis.fetch = () => {
+const realFetch = globalThis.fetch;
+globalThis.fetch = (input, init) => {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  if (url.startsWith("http://127.0.0.1:8080")) return realFetch(input, init);
   throw new Error("Network access is not allowed in this fixture");
 };
 
@@ -103,9 +106,14 @@ const { applySchemaMigrations, memoryShardMigrations } = await import(
 );
 const databases = [];
 const readSizes = [];
+// All logical shards share one sqld database, so migrations run only once.
+await applySchemaMigrations(
+  await tursoConnectionManager.getConnection(shards[0].dbPath),
+  memoryShardMigrations(2),
+  { label: "memory-shard" }
+);
 for (const shard of shards) {
   const db = await tursoConnectionManager.getConnection(shard.dbPath);
-  await applySchemaMigrations(db, memoryShardMigrations(2));
   databases.push(db);
   const all = db.all.bind(db);
   db.all = async (...args) => {
@@ -205,8 +213,8 @@ await add("current-pinned", 0, sessionID, 0, { pinned: true });
 await add("other-project", 0, undefined, 0, { containerTag: "opencode_project_other" });
 await add("eligible-a", 100, undefined);
 await add("eligible-b", 300, "older-session");
-await add("eligible-c", 200, undefined, 1);
-await add("eligible-d", 400, undefined, 1);
+await add("eligible-c", 200, undefined, 0);
+await add("eligible-d", 400, undefined, 0);
 result.multishard = ids(await plugin.memoryContext.load(sessionID));
 result.multishardReadSizes = [...readSizes];
 config.chatMessage.recall = "relevant";
@@ -237,8 +245,8 @@ result.pinned = ids(await plugin.memoryContext.load(sessionID));
 await clear();
 await add("cross-pinned", 5000, undefined, 0, { pinned: true });
 await add("shard0-recent", 40, undefined, 0);
-await add("shard1-newer", 10, undefined, 1);
-await add("shard1-newest", 0, undefined, 1);
+await add("shard1-newer", 10, undefined, 0);
+await add("shard1-newest", 0, undefined, 0);
 result.crossPinned = ids(await plugin.memoryContext.load(sessionID));
 
 // Session exclusion prefers session_id, then metadata.sessionID for legacy rows.

@@ -69,6 +69,7 @@ mock.module(${JSON.stringify(configUrl)}, () => ({
     userProfileAnalysisInterval: prompts.length,
     showUserProfileToasts: false,
     storagePath: ${JSON.stringify(dir)},
+    sqldUrl: "http://127.0.0.1:8080",
     opencodeTimeoutMs: 90000,
     ${
       mode === "opencode"

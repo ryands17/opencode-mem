@@ -163,12 +163,12 @@ export const en = {
     title: "Your memories live on your machine.",
     points: [
       [
-        "No account, no cloud.",
-        "Memories are stored on your disk, under ~/.opencode-mem by default.",
+        "Self-hosted storage.",
+        "Memories live in a libSQL server (sqld) you run, reached over HTTP/WebSocket; only caches stay under ~/.opencode-mem by default.",
       ],
       [
-        "Local embeddings.",
-        "Search runs on your CPU out of the box. No GPU, no embedding API needed.",
+        "Remote embeddings.",
+        "Similarity search uses an OpenAI-compatible embeddings API you configure. No GPU or local model download needed.",
       ],
       [
         "Loopback by default.",
@@ -178,16 +178,19 @@ export const en = {
         "Secrets stay out.",
         "Recognizable credentials are redacted before anything is summarized. Wrap anything else in <private>.",
       ],
-      ["Encrypted if you want.", "Turn on AES-256-GCM encryption at rest with one setting."],
+      [
+        "Protected your way.",
+        "Restrict network access to sqld, set an auth token, and encrypt the server's storage volume.",
+      ],
     ],
     note: "Auto-capture summarizes your session with the AI provider you choose, the same kind of request your agent already makes.",
   },
   hood: {
     title: "Under the hood",
     items: [
-      "Embedded Turso/libSQL with native vector search, one shard per project",
-      "Local embeddings via @huggingface/transformers on ONNX, default Xenova/nomic-embed-text-v1",
-      "12+ local embedding models, or any OpenAI-compatible endpoint",
+      "libSQL server (sqld) with native vector search, one logical shard per project",
+      "Remote embeddings via any OpenAI-compatible /embeddings endpoint",
+      "Pure-JS libSQL client — no native bindings, so Intel Macs work too",
       "On OpenCode v2, memory context goes into the system context, not your prompt or transcript",
     ],
     link: "How storage and embeddings work",
@@ -204,7 +207,7 @@ export const en = {
     items: [
       [
         "Does my code leave my machine?",
-        "Memories, embeddings, and the web UI stay local. The one outbound call is Auto-capture: it asks the AI provider you configure to summarize the session, much like your agent already does. Credentials are stripped first.",
+        "Memories live in the sqld server you run, and embeddings go to the API you configure. Auto-capture also asks your AI provider to summarize the session, much like your agent already does. Credentials are stripped first.",
       ],
       [
         "What does it cost?",
@@ -212,11 +215,11 @@ export const en = {
       ],
       [
         "Will it work with my setup?",
-        "It runs as an OpenCode plugin on v1 and v2, on Linux, Windows, and Apple Silicon Macs. Intel Macs are not supported because two native dependencies ship no x64 build there.",
+        "It runs as an OpenCode plugin on v1 and v2 on Linux, Windows, and macOS (Apple Silicon and Intel). It needs a running sqld server and a remote embeddings endpoint; there are no native bindings.",
       ],
       [
         "Do I need a GPU?",
-        "No. Local embeddings run on CPU and use about 0.5 to 2 GB of RAM while loaded. Prefer zero local load? Point it at a remote embeddings API.",
+        "No. Embeddings are computed by the API you configure, so nothing is downloaded or kept in local RAM.",
       ],
       [
         "Do I have to tell it what to remember?",

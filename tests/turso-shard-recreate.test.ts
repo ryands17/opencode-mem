@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { cleanupTursoTestDirectory } from "./turso-test-utils.js";
+import { cleanupTursoTestDirectory, resetSqldState } from "./turso-test-utils.js";
 
 const TEST_SCOPE_HASH = "a1b2c3d4e5f67890";
 
@@ -10,6 +10,7 @@ describe("turso invalid shard protection", () => {
   let baseDir: string;
 
   afterEach(async () => {
+    await resetSqldState();
     await cleanupTursoTestDirectory(baseDir);
   });
 
@@ -42,11 +43,10 @@ describe("turso invalid shard protection", () => {
     );
 
     await expect(tursoShardManager.getWriteShard("project", TEST_SCOPE_HASH)).rejects.toThrow(
-      /left untouched/
+      /Memory store is incompatible or corrupt/
     );
 
-    expect(existsSync(shard.dbPath)).toBe(true);
-    expect(existsSync(`${shard.dbPath}.invalid.bak`)).toBe(false);
+    expect(shard.dbPath).toMatch(/^sqld:\/\//);
     const count = await db.get(`SELECT COUNT(*) AS count FROM memories`);
     expect(Number(count?.count)).toBe(1);
   });
@@ -77,10 +77,10 @@ describe("turso invalid shard protection", () => {
     await db.run(`DELETE FROM shard_metadata WHERE key = 'embedding_dimensions'`);
 
     await expect(tursoShardManager.getWriteShard("project", TEST_SCOPE_HASH)).rejects.toThrow(
-      /left untouched/
+      /Memory store is incompatible or corrupt/
     );
 
-    expect(existsSync(shard.dbPath)).toBe(true);
+    expect(shard.dbPath).toMatch(/^sqld:\/\//);
     const count = await db.get(`SELECT COUNT(*) AS count FROM memories`);
     expect(Number(count?.count)).toBe(1);
   });

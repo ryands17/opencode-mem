@@ -10,7 +10,6 @@ const connectionManagerUrl = new URL("../src/services/turso/connection-manager.j
 const embeddingUrl = new URL("../src/services/embedding.js", import.meta.url).href;
 const shardManagerUrl = new URL("../src/services/turso/shard-manager.js", import.meta.url).href;
 const vectorSearchUrl = new URL("../src/services/turso/vector-search.js", import.meta.url).href;
-const legacyMigratorUrl = new URL("../src/services/turso/legacy-migrator.js", import.meta.url).href;
 const readyUrl = new URL("../src/services/turso/ready.js", import.meta.url).href;
 
 function runScenario(scriptBody: string) {
@@ -91,10 +90,6 @@ mock.module(${JSON.stringify(embeddingUrl)}, () => ({
     warmup: async () => {},
     embedWithTimeout: async () => new Float32Array([1, 2, 3]),
   },
-}));
-
-mock.module(${JSON.stringify(legacyMigratorUrl)}, () => ({
-  runLegacyTursoMigration: async () => {},
 }));
 
 mock.module(${JSON.stringify(readyUrl)}, () => ({

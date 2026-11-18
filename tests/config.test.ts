@@ -17,7 +17,6 @@ const {
   isPlaceholderApiKey,
   normalizeAutoCleanupRetentionDays,
   normalizeAutoCaptureMaxContextBytes,
-  normalizeEmbeddingIdleTimeoutMs,
 } = await import("../src/config.js");
 
 afterAll(() => {
@@ -42,27 +41,6 @@ describe("config", () => {
 
     it("should default embeddingUseTaskPrefixes to false", () => {
       expect(CONFIG.embeddingUseTaskPrefixes).toBe(false);
-    });
-
-    it("should default embeddingPooling to mean", () => {
-      expect(CONFIG.embeddingPooling).toBe("mean");
-    });
-
-    it("should leave embeddingDtype unset by default", () => {
-      expect(CONFIG.embeddingDtype).toBeUndefined();
-    });
-
-    it("should keep the local embedding model loaded by default", async () => {
-      // Cache-busted: CONFIG otherwise carries the developer's real user config.
-      const fresh = await import(`../src/config.js?cachebust=${Math.random()}`);
-      expect(fresh.CONFIG.embeddingIdleTimeoutMs).toBe(0);
-    });
-
-    it("should normalize embeddingIdleTimeoutMs and allow 0 to disable", () => {
-      expect(normalizeEmbeddingIdleTimeoutMs(0)).toBe(0);
-      expect(normalizeEmbeddingIdleTimeoutMs(600000)).toBe(600000);
-      expect(() => normalizeEmbeddingIdleTimeoutMs(-1)).toThrow(/embeddingIdleTimeoutMs/);
-      expect(() => normalizeEmbeddingIdleTimeoutMs(1.5)).toThrow(/embeddingIdleTimeoutMs/);
     });
 
     it("should have numeric embeddingDimensions", () => {

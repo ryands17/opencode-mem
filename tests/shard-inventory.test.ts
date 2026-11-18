@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { cleanupTursoTestDirectory } from "./turso-test-utils.js";
+import { cleanupTursoTestDirectory, resetSqldState } from "./turso-test-utils.js";
 
 describe("shard inventory and source resolution", () => {
   let baseDir: string;
@@ -19,6 +19,8 @@ describe("shard inventory and source resolution", () => {
     newProjectDir = join(baseDir, "new-project");
     mkdirSync(oldProjectDir, { recursive: true });
     mkdirSync(newProjectDir, { recursive: true });
+    mkdirSync(join(baseDir, "storage"), { recursive: true });
+    await resetSqldState();
 
     const { CONFIG } = await import("../src/config.js");
     CONFIG.storagePath = join(baseDir, "storage");

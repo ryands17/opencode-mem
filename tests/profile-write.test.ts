@@ -9,15 +9,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tursoConnectionManager } from "../src/services/turso/connection-manager.js";
 
-// We patch CONFIG.storagePath before importing the manager so the DB lands in tmp.
+// All tests share one sqld database, so use a fresh user id per test.
 let tmpDir: string;
+let userId: string;
 
 async function makeManager() {
-  // Dynamic import after setting storagePath so the constructor picks up the temp dir.
   const { CONFIG } = await import("../src/config.js");
   CONFIG.storagePath = tmpDir;
-  // Bun may cache the imported module, so this helper does not try to reload it.
-  // Instead, each test creates a new UserProfileManager instance after updating CONFIG.storagePath.
+  userId = `test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
   const { UserProfileManager } =
     await import("../src/services/user-profile/user-profile-manager.js");
   return new UserProfileManager();
@@ -40,7 +39,6 @@ describe("UserProfileManager – explicit preference writes", () => {
 
   it("creates a profile with an explicit preference when none exists", async () => {
     const mgr = await makeManager();
-    const userId = "test@example.com";
 
     await mgr.createProfile(
       userId,
@@ -75,7 +73,6 @@ describe("UserProfileManager – explicit preference writes", () => {
 
   it("merges a new explicit preference into an existing profile without clobbering other prefs", async () => {
     const mgr = await makeManager();
-    const userId = "test@example.com";
 
     // Seed with one AI-learned preference
     await mgr.createProfile(
@@ -132,7 +129,6 @@ describe("UserProfileManager – explicit preference writes", () => {
 
   it("deduplicates when the same explicit preference is written twice, boosting confidence", async () => {
     const mgr = await makeManager();
-    const userId = "test@example.com";
     const description = "Prefer short answers";
 
     const pref = {
@@ -183,7 +179,6 @@ describe("UserProfileManager – explicit preference writes", () => {
 
   it("changelog entry is recorded on explicit preference write", async () => {
     const mgr = await makeManager();
-    const userId = "test@example.com";
     const summary = "Explicit preference added: Use snake_case";
 
     await mgr.createProfile(

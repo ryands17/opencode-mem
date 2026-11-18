@@ -1,4 +1,3 @@
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { tursoShardManager } from "./turso/shard-manager.js";
 import { tursoConnectionManager } from "./turso/connection-manager.js";
 import { tursoVectorSearch } from "./turso/vector-search.js";
@@ -8,15 +7,7 @@ import { CONFIG } from "../config.js";
 import { log } from "./logger.js";
 import { formatTagsForEmbedding } from "./turso/vector-utils.js";
 import type { MemoryRecord, ShardInfo } from "./turso/types.js";
-import {
-  acquireTursoOperationLock,
-  isTursoLockOwnershipLostError,
-} from "./turso/operation-lock.js";
-import {
-  withSqliteFileLockRetry,
-  renameSqliteDatabase,
-  removeSqliteDatabase,
-} from "./turso/sqlite-handle-release.js";
+import { acquireTursoOperationLock } from "./turso/operation-lock.js";
 
 export interface DimensionMismatch {
   needsMigration: boolean;
@@ -281,143 +272,97 @@ export class MigrationService {
     heartbeat: () => void,
     onProcessed: (memoryId: string) => void
   ): Promise<number> {
-    const sourceDb = await tursoConnectionManager.getConnection(shard.dbPath);
-    const memories = await sourceDb.all(`
-      SELECT
+    const db = await tursoConnectionManager.getConnection(shard.dbPath);
+    const suffix = `${shard.scope}_${shard.scopeHash}`;
+    const memories = await db.all(
+      `SELECT
         id, content, container_tag, tags, type, created_at, updated_at, metadata,
         display_name, user_name, user_email, project_path, project_name, git_repo_url, is_pinned
-      FROM memories
-      ORDER BY created_at DESC
-    `);
-    const nonce = `${process.pid}-${Date.now()}`;
-    const stagedPath = `${shard.dbPath}.reembed-${nonce}.tmp`;
-    const backupPath = `${shard.dbPath}.pre-reembed-${nonce}.bak`;
-    const swapStatePath = `${shard.dbPath}.reembed-swap.json`;
+       FROM memories WHERE instr(container_tag, ?) > 0
+       ORDER BY created_at DESC`,
+      [suffix]
+    );
 
-    try {
-      const stagedDb = await tursoConnectionManager.getConnection(stagedPath);
-      await tursoShardManager.initShardDb(stagedDb);
-
-      // Stage bounded batches. Model or database failures only discard this
-      // temporary shard; the source is not touched until full verification.
-      const batchSize = 50;
-      for (let offset = 0; offset < memories.length; offset += batchSize) {
-        const stagedBatch: Array<{ record: MemoryRecord; isPinned: boolean }> = [];
-        for (const memory of memories.slice(offset, offset + batchSize)) {
-          const content = String(memory.content);
-          const tags = memory.tags
-            ? String(memory.tags)
-                .split(",")
-                .map((tag) => tag.trim())
-                .filter(Boolean)
-            : [];
-          const embeddingInput = tags.length > 0 ? `${content}\nTags: ${tags.join(", ")}` : content;
-          const vector = await embeddingService.embedWithTimeout(embeddingInput, {
-            task: "document",
-          });
-          const tagsVector =
-            tags.length > 0
-              ? await embeddingService.embedWithTimeout(formatTagsForEmbedding(tags), {
-                  task: "document",
-                })
-              : undefined;
-
-          stagedBatch.push({
-            record: {
-              id: String(memory.id),
-              content,
-              vector,
-              tagsVector,
-              containerTag: String(memory.container_tag),
-              tags: memory.tags ? String(memory.tags) : undefined,
-              type: memory.type ? String(memory.type) : undefined,
-              createdAt: Number(memory.created_at),
-              updatedAt: Number(memory.updated_at),
-              metadata: memory.metadata ? String(memory.metadata) : undefined,
-              sessionId: memory.session_id ? String(memory.session_id) : undefined,
-              displayName: memory.display_name ? String(memory.display_name) : undefined,
-              userName: memory.user_name ? String(memory.user_name) : undefined,
-              userEmail: memory.user_email ? String(memory.user_email) : undefined,
-              projectPath: memory.project_path ? String(memory.project_path) : undefined,
-              projectName: memory.project_name ? String(memory.project_name) : undefined,
-              gitRepoUrl: memory.git_repo_url ? String(memory.git_repo_url) : undefined,
-            },
-            isPinned: Number(memory.is_pinned ?? 0) === 1,
-          });
-          onProcessed(String(memory.id));
-        }
-
-        heartbeat();
-        await stagedDb.transaction("write", async (tx) => {
-          for (const item of stagedBatch) {
-            await tursoVectorSearch.insertVectorInTransaction(tx, item.record);
-            if (item.isPinned) {
-              await tx.execute({
-                sql: `UPDATE memories SET is_pinned = 1 WHERE id = ?`,
-                args: [item.record.id],
-              });
-            }
-          }
-        });
-        heartbeat();
-      }
-
-      const countRow = await stagedDb.get(`SELECT COUNT(*) AS count FROM memories`);
-      const stagedCount = Number(countRow?.count ?? 0);
-      if (stagedCount !== memories.length) {
-        throw new Error(
-          `Migration staged count mismatch for shard ${shard.id}: expected ${memories.length}, got ${stagedCount}`
-        );
-      }
-
-      await tursoConnectionManager.closeConnection(stagedPath);
-      heartbeat();
-      writeFileSync(
-        swapStatePath,
-        JSON.stringify({ dbPath: shard.dbPath, stagedPath, backupPath }),
-        "utf-8"
-      );
-      await tursoConnectionManager.closeConnection(shard.dbPath);
-      heartbeat();
-      await withSqliteFileLockRetry(() => renameSqliteDatabase(shard.dbPath, backupPath));
-      try {
-        await withSqliteFileLockRetry(() => renameSqliteDatabase(stagedPath, shard.dbPath));
-      } catch (error) {
-        await withSqliteFileLockRetry(() => renameSqliteDatabase(backupPath, shard.dbPath));
-        throw error;
-      }
-
-      await tursoShardManager.setVectorCount(shard.id, stagedCount);
-      unlinkSync(swapStatePath);
-      log("Migration: safely replaced re-embedded shard", {
-        shardId: shard.id,
-        memories: stagedCount,
-        backupPath,
+    const batchSize = 50;
+    const rebuilt: Array<{ record: MemoryRecord; isPinned: boolean }> = [];
+    for (const memory of memories) {
+      const content = String(memory.content);
+      const tags = memory.tags
+        ? String(memory.tags)
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean)
+        : [];
+      const embeddingInput = tags.length > 0 ? `${content}\nTags: ${tags.join(", ")}` : content;
+      const vector = await embeddingService.embedWithTimeout(embeddingInput, {
+        task: "document",
       });
-      return stagedCount;
-    } catch (error) {
-      await tursoConnectionManager.closeConnection(stagedPath);
-      if (isTursoLockOwnershipLostError(error)) {
-        // The journal path is shared per shard. A successor may already own it
-        // (and the lock); never unlink it after ownership loss. Only discard our
-        // nonce-scoped staged file when the source shard is still in place.
-        log(
-          "WARNING: Re-embed interrupted after lock ownership lost; leaving swap journal untouched",
-          { error: String(error), swapStatePath, dbPath: shard.dbPath }
-        );
-        if (existsSync(shard.dbPath) && existsSync(stagedPath)) {
-          await withSqliteFileLockRetry(() => removeSqliteDatabase(stagedPath));
-        }
-      } else {
-        if (existsSync(stagedPath)) {
-          await withSqliteFileLockRetry(() => removeSqliteDatabase(stagedPath));
-        }
-        if (existsSync(swapStatePath) && existsSync(shard.dbPath)) {
-          unlinkSync(swapStatePath);
-        }
-      }
-      throw error;
+      const tagsVector =
+        tags.length > 0
+          ? await embeddingService.embedWithTimeout(formatTagsForEmbedding(tags), {
+              task: "document",
+            })
+          : undefined;
+
+      rebuilt.push({
+        record: {
+          id: String(memory.id),
+          content,
+          vector,
+          tagsVector,
+          containerTag: String(memory.container_tag),
+          tags: memory.tags ? String(memory.tags) : undefined,
+          type: memory.type ? String(memory.type) : undefined,
+          createdAt: Number(memory.created_at),
+          updatedAt: Number(memory.updated_at),
+          metadata: memory.metadata ? String(memory.metadata) : undefined,
+          sessionId: memory.session_id ? String(memory.session_id) : undefined,
+          displayName: memory.display_name ? String(memory.display_name) : undefined,
+          userName: memory.user_name ? String(memory.user_name) : undefined,
+          userEmail: memory.user_email ? String(memory.user_email) : undefined,
+          projectPath: memory.project_path ? String(memory.project_path) : undefined,
+          projectName: memory.project_name ? String(memory.project_name) : undefined,
+          gitRepoUrl: memory.git_repo_url ? String(memory.git_repo_url) : undefined,
+        },
+        isPinned: Number(memory.is_pinned ?? 0) === 1,
+      });
+      onProcessed(String(memory.id));
     }
+    heartbeat();
+
+    await db.transaction("write", async (tx) => {
+      await tx.run(`DELETE FROM memories WHERE instr(container_tag, ?) > 0`, [suffix]);
+      for (let offset = 0; offset < rebuilt.length; offset += batchSize) {
+        for (const item of rebuilt.slice(offset, offset + batchSize)) {
+          await tursoVectorSearch.insertVectorInTransaction(tx, item.record);
+          if (item.isPinned) {
+            await tx.execute({
+              sql: `UPDATE memories SET is_pinned = 1 WHERE id = ?`,
+              args: [item.record.id],
+            });
+          }
+        }
+        heartbeat();
+      }
+    });
+
+    const countRow = await db.get(
+      `SELECT COUNT(*) AS count FROM memories WHERE instr(container_tag, ?) > 0`,
+      [suffix]
+    );
+    const count = Number(countRow?.count ?? 0);
+    if (count !== memories.length) {
+      throw new Error(
+        `Migration re-embed count mismatch for shard ${shard.id}: expected ${memories.length}, got ${count}`
+      );
+    }
+    await db.run(
+      `INSERT OR REPLACE INTO shard_metadata (key, value) VALUES ('embedding_dimensions', ?)`,
+      [String(CONFIG.embeddingDimensions)]
+    );
+    await tursoShardManager.setVectorCount(shard.id, count);
+    log("Migration: re-embedded shard in sqld", { shardId: shard.id, memories: count });
+    return count;
   }
 
   private reportProgress(progress: MigrationProgress): void {

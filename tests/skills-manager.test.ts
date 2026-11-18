@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tursoConnectionManager } from "../src/services/turso/connection-manager.js";
 import { isValidSkillId } from "../src/services/skills/types.js";
+import { resetSqldState } from "./turso-test-utils.js";
 
 let tmpDir: string;
 
@@ -31,8 +32,9 @@ describe("isValidSkillId", () => {
 });
 
 describe("SkillsManager", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), "opencode-mem-skills-"));
+    await resetSqldState();
   });
 
   afterEach(async () => {

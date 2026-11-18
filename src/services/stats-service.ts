@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { CONFIG } from "../config.js";
 import { tursoConnectionManager } from "./turso/connection-manager.js";
 import type { ShardInfo } from "./turso/types.js";
@@ -259,8 +259,8 @@ export async function collectShardStats(shards: ShardInfo[]): Promise<ShardColle
       scope: shard.scope,
       scopeHash: shard.scopeHash,
       shardIndex: shard.shardIndex,
-      fileName: basename(shard.dbPath),
-      fileExists: existsSync(shard.dbPath),
+      fileName: `${shard.scope}_${shard.scopeHash}_shard_${shard.shardIndex}.db`,
+      fileExists: true,
       isActive: shard.isActive,
       registeredVectorCount: shard.vectorCount,
       memoryCount: 0,
@@ -269,14 +269,9 @@ export async function collectShardStats(shards: ShardInfo[]): Promise<ShardColle
       duplicateTagCount: 0,
     };
 
-    if (!stats.fileExists) {
-      stats.error = `Shard DB file missing: ${stats.fileName}`;
-      shardStats.push(stats);
-      continue;
-    }
-
     try {
       const db = await tursoConnectionManager.getConnection(shard.dbPath);
+      const containerTag = `${CONFIG.containerTagPrefix}_${shard.scope}_${shard.scopeHash}`;
 
       // Aggregate instead of `SELECT *` (getAllMemories): stats is polled every
       // 30s by the web UI and must not drag vector blobs for every memory.
@@ -291,7 +286,8 @@ export async function collectShardStats(shards: ShardInfo[]): Promise<ShardColle
         type: unknown;
         c: number | bigint;
       }>(
-        "SELECT container_tag, type, COUNT(*) c FROM memories WHERE deleted_at IS NULL GROUP BY container_tag, type"
+        "SELECT container_tag, type, COUNT(*) c FROM memories WHERE deleted_at IS NULL AND container_tag = ? GROUP BY container_tag, type",
+        [containerTag]
       );
       for (const row of scopeTypeCounts) {
         const containerTag = String(row.container_tag ?? "");
@@ -303,14 +299,16 @@ export async function collectShardStats(shards: ShardInfo[]): Promise<ShardColle
       }
 
       const aggregate = await db.get<{ c: number | bigint; mn: unknown; mx: unknown }>(
-        "SELECT COUNT(*) c, MIN(created_at) mn, MAX(created_at) mx FROM memories WHERE deleted_at IS NULL"
+        "SELECT COUNT(*) c, MIN(created_at) mn, MAX(created_at) mx FROM memories WHERE deleted_at IS NULL AND container_tag = ?",
+        [containerTag]
       );
       stats.memoryCount = Number(aggregate?.c ?? 0);
       stats.oldestCreatedAt = toISOStringOrNull(aggregate?.mn);
       stats.newestCreatedAt = toISOStringOrNull(aggregate?.mx);
 
       const duplicateTags = await db.all<{ c: number | bigint }>(
-        "SELECT tags, COUNT(*) c FROM memories WHERE deleted_at IS NULL AND tags IS NOT NULL AND tags != '' GROUP BY tags HAVING COUNT(*) > 1"
+        "SELECT tags, COUNT(*) c FROM memories WHERE deleted_at IS NULL AND container_tag = ? AND tags IS NOT NULL AND tags != '' GROUP BY tags HAVING COUNT(*) > 1",
+        [containerTag]
       );
       stats.duplicateTagCount = duplicateTags.reduce(
         (total, row) => total + Math.max(0, Number(row.c) - 1),

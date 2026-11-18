@@ -10,7 +10,8 @@ const project = join(dir, "project");
 process.env.XDG_CONFIG_HOME = join(dir, "config");
 process.env.HOME = dir;
 process.env.USERPROFILE = dir;
-const { cleanupTursoTestDirectory } = await import("../turso-test-utils.js");
+const { cleanupTursoTestDirectory, resetSqldState } = await import("../turso-test-utils.js");
+await resetSqldState();
 const { CONFIG } = await import(u("config"));
 Object.assign(CONFIG, {
   storagePath: dir,

@@ -29,7 +29,7 @@
     {
       "slug": "start/getting-started",
       "group": "Start",
-      "sections": ["Getting Started", "Automatic memory context on OpenCode v2"]
+      "sections": ["Getting Started", "Set up sqld", "Automatic memory context on OpenCode v2"]
     },
     {
       "slug": "start/local-checkout",

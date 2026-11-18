@@ -15,7 +15,6 @@ import {
   withSqliteFileLockRetry,
   renameSqliteDatabase,
   removeSqliteDatabase,
-  copySqliteDatabase,
 } from "./turso/sqlite-handle-release.js";
 import { log } from "./logger.js";
 import {
@@ -97,9 +96,15 @@ function assertRecoveryPathInsideStorage(path: string): void {
 }
 
 async function countLiveMemories(dbPath: string): Promise<number> {
-  if (!existsSync(dbPath)) return 0;
   const db = await tursoConnectionManager.getConnection(dbPath);
-  return tursoVectorSearch.countAllVectors(db);
+  const match = /^sqld:\/\/(user|project)\/([a-f0-9]{16})\//.exec(dbPath);
+  const row = match
+    ? await db.get(
+        `SELECT COUNT(*) AS n FROM memories WHERE instr(container_tag, ?) > 0 AND deleted_at IS NULL`,
+        [`${match[1]}_${match[2]}`]
+      )
+    : await db.get(`SELECT COUNT(*) AS n FROM memories WHERE deleted_at IS NULL`);
+  return Number(row?.n ?? 0);
 }
 
 async function removeFile(path: string): Promise<void> {
@@ -239,9 +244,9 @@ export class ShardPathMigrationService {
     for (const shard of targetShards) {
       actions.push({ type: "archive-empty-target", detail: basename(shard.dbPath) });
     }
-    const migratedMemories = (
-      await Promise.all(moves.map((move) => countLiveMemories(move.oldPath)))
-    ).reduce((sum, count) => sum + count, 0);
+    // All source shards share one logical database and container tag, so count
+    // once instead of once per shard (which would double-count every row).
+    const migratedMemories = moves.length > 0 ? await countLiveMemories(moves[0]!.oldPath) : 0;
     actions.push({
       type: "update-memories",
       detail: `Remap container_tag and project metadata for ${migratedMemories} memories`,
@@ -264,91 +269,29 @@ export class ShardPathMigrationService {
     }
 
     const releaseLock = acquireTursoOperationLock("path-migrate");
-    const statePath = swapStatePath();
-    const archivedTargets: ArchivedTarget[] = targetShards.map((shard) => ({
-      shardId: shard.id,
-      shardIndex: shard.shardIndex,
-      originalPath: shard.dbPath,
-      archivePath: `${shard.dbPath}.pre-path-migrate-${nonce}.bak`,
-      isActive: shard.isActive,
-      vectorCount: shard.vectorCount,
-    }));
-    const state: PathMigrateSwapState = {
-      operation: "path-migrate",
-      oldHash,
-      newHash,
-      moves,
-      archivedTargets,
-    };
-
+    const processedMoves: ShardMove[] = [];
     try {
-      // Stage complete, updated copies while originals remain untouched.
-      // A gigantic shard's synchronous copy or single UPDATE/count can still delay a heartbeat.
+      const db = await tursoConnectionManager.getConnection(moves[0]!.oldPath);
       for (const move of moves) {
-        await tursoConnectionManager.closeConnection(move.oldPath);
-        if (!existsSync(move.oldPath)) {
-          throw new Error(`Source shard file missing: ${move.oldPath}`);
-        }
-        await removeFile(move.stagedPath);
-        copySqliteDatabase(move.oldPath, move.stagedPath);
-
-        const stagedDb = await tursoConnectionManager.getConnection(move.stagedPath);
-        await tursoVectorSearch.updateProjectAssociation(stagedDb, move.oldContainerTag, {
+        await tursoVectorSearch.updateProjectAssociation(db, move.oldContainerTag, {
           containerTag: target.tag,
           projectPath: target.projectPath,
           projectName: target.projectName,
           displayName: target.displayName,
           gitRepoUrl: target.gitRepoUrl ?? null,
         });
-        await stagedDb.run(
-          `UPDATE memories SET
-             container_tag = ?, project_path = ?, project_name = ?,
-             display_name = ?, git_repo_url = ?
-           WHERE container_tag != ?`,
-          [
-            target.tag,
-            target.projectPath ?? null,
-            target.projectName ?? null,
-            target.displayName ?? null,
-            target.gitRepoUrl ?? null,
-            target.tag,
-          ]
-        );
-        const stagedCount = await tursoVectorSearch.countAllVectors(stagedDb);
-        if (stagedCount !== move.vectorCount) {
-          throw new Error(
-            `Staged shard count mismatch for ${basename(move.oldPath)}: expected ${move.vectorCount}, got ${stagedCount}`
-          );
-        }
-        await tursoConnectionManager.closeConnection(move.stagedPath);
+        processedMoves.push(move);
         releaseLock.heartbeat();
       }
 
-      writeSwapState(statePath, state);
-      releaseLock.heartbeat();
-
-      // Empty targets remain recoverable until the complete swap succeeds.
-      for (let index = 0; index < targetShards.length; index++) {
-        await tursoShardManager.archiveShard(
-          targetShards[index]!.id,
-          "pre-path-migrate",
-          archivedTargets[index]!.archivePath!
-        );
+      for (const shard of targetShards) {
+        // Targets are empty (strict conflict check above). Removing only the
+        // registry row avoids deleting source memories, which share the DB.
+        await tursoShardManager.removeShardRegistry(shard.id);
         releaseLock.heartbeat();
       }
 
       for (const move of moves) {
-        await tursoConnectionManager.closeConnection(move.oldPath);
-        releaseLock.heartbeat();
-        await withSqliteFileLockRetry(() => renameSqliteDatabase(move.oldPath, move.backupPath));
-        try {
-          await withSqliteFileLockRetry(() => renameSqliteDatabase(move.stagedPath, move.newPath));
-        } catch (error) {
-          await withSqliteFileLockRetry(() => renameSqliteDatabase(move.backupPath, move.oldPath));
-          throw error;
-        }
-        releaseLock.heartbeat();
-
         await tursoShardManager.reassignShardScope(
           move.shardId,
           newHash,
@@ -360,10 +303,8 @@ export class ShardPathMigrationService {
           type: "reassign-metadata",
           detail: `shard ${move.shardId} -> ${newHash}#${move.shardIndex}`,
         });
+        releaseLock.heartbeat();
       }
-
-      unlinkSync(statePath);
-      releaseLock.heartbeat();
 
       // Prompt metadata is secondary and must not invalidate a completed,
       // recoverable memory migration.
@@ -390,26 +331,27 @@ export class ShardPathMigrationService {
         actions,
       };
     } catch (error) {
-      const ownershipLost = isTursoLockOwnershipLostError(error);
-      if (ownershipLost) {
-        // A successor may already be writing to the migrated paths. Only fresh
-        // ownership at startup may recover any journal that remains.
-        log(
-          "WARNING: Path migration interrupted after lock ownership lost; leaving recoverable state untouched",
-          { error: String(error), statePath }
-        );
-      } else {
-        await this.rollbackSwap(state, statePath);
+      // Restore already-remapped rows: everything shares one database, so a
+      // partial update would otherwise leave source memories under the target tag.
+      if (processedMoves.length > 0) {
+        const db = await tursoConnectionManager.getConnection(moves[0]!.oldPath);
+        for (const move of [...processedMoves].reverse()) {
+          await tursoVectorSearch.updateProjectAssociation(db, target.tag, {
+            containerTag: move.oldContainerTag,
+            projectPath: source.group.projectPath ?? undefined,
+            projectName: source.group.projectName ?? undefined,
+            displayName: source.group.projectName ?? undefined,
+            gitRepoUrl: source.group.gitRepoUrl ?? null,
+          });
+        }
       }
+      const ownershipLost = isTursoLockOwnershipLostError(error);
+      log("Path migration failed", { error: String(error), ownershipLost });
       return {
         success: false,
         ...resultBase,
         dryRun: false,
-        error: ownershipLost
-          ? `Path migration interrupted after lock ownership lost and may have completed; state is recoverable. ${String(error)}`
-          : error instanceof Error
-            ? error.message
-            : String(error),
+        error: error instanceof Error ? error.message : String(error),
       };
     } finally {
       releaseLock();
@@ -464,20 +406,6 @@ export class ShardPathMigrationService {
         rollbackFailed = true;
         log("Path migration target rollback failed", { archived, error: String(error) });
       }
-    }
-
-    // Startup reconciliation may have registered a newly renamed shard before
-    // recovery ran. Remove only registry rows whose files no longer exist.
-    try {
-      const staleTargets = await tursoShardManager.getAllShards("project", state.newHash);
-      for (const shard of staleTargets) {
-        if (!existsSync(shard.dbPath)) {
-          await tursoShardManager.deleteShard(shard.id);
-        }
-      }
-    } catch (error) {
-      rollbackFailed = true;
-      log("Path migration stale target cleanup failed", { error: String(error) });
     }
 
     if (!rollbackFailed && existsSync(statePath)) {

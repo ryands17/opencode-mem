@@ -1,23 +1,14 @@
-import { afterAll, describe, expect, it } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect } from "@tursodatabase/database";
+import { createClient } from "@libsql/client/web";
+import { CONFIG } from "../src/config.js";
 import { TursoDb } from "../src/services/turso/turso-db.js";
 import {
-  PROFILE_LEARNING_COORDINATION_DB,
   getProfileLearningBootId,
   getProfileLearningStarttime,
 } from "../src/services/user-profile/learning-lock.js";
-import { tursoExperimentalFeatures } from "../src/services/turso/connection-manager.js";
 
 const tempDirs: string[] = [];
 
@@ -29,6 +20,13 @@ afterAll(() => {
       // Best-effort cleanup.
     }
   }
+});
+
+afterEach(async () => {
+  await withDb("", async (db) => {
+    await db.run(`CREATE TABLE IF NOT EXISTS profile_learning_lock (name TEXT PRIMARY KEY)`);
+    await db.run(`DELETE FROM profile_learning_lock`);
+  });
 });
 
 const WORKER = join(import.meta.dir, "fixtures", "profile-learning-lock-worker.mts");
@@ -116,13 +114,15 @@ async function runProbe(dir: string): Promise<WorkerResult> {
 }
 
 /** Opens the coordination DB directly (fixture setup / assertions). */
-async function withDb<T>(dir: string, fn: (db: TursoDb) => Promise<T>): Promise<T> {
-  const native = await connect(join(dir, PROFILE_LEARNING_COORDINATION_DB), {
-    experimental: tursoExperimentalFeatures(),
-  });
-  const db = new TursoDb(native);
+async function withDb<T>(_dir: string, fn: (db: TursoDb) => Promise<T>): Promise<T> {
+  const db = new TursoDb(
+    createClient({
+      url: CONFIG.sqldUrl,
+      ...(CONFIG.sqldAuthToken ? { authToken: CONFIG.sqldAuthToken } : {}),
+      concurrency: 1,
+    })
+  );
   try {
-    await db.run("PRAGMA busy_timeout = 5000");
     return await fn(db);
   } finally {
     await db.close();
@@ -159,8 +159,6 @@ async function plantOwner(dir: string, owner: PlantedOwner): Promise<void> {
         owner.acquiredAt ?? Date.now(),
       ]
     );
-    // Flush WAL so freshly spawned workers always see the planted row.
-    await db.run(`PRAGMA wal_checkpoint(TRUNCATE)`);
   });
 }
 
@@ -589,11 +587,11 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
 
   it("fails closed when the coordination database cannot be opened", async () => {
     const dir = storage();
-    // A directory where the DB file should be makes every statement fail;
-    // acquisition must degrade to null (skip this round), not throw.
-    mkdirSync(join(dir, PROFILE_LEARNING_COORDINATION_DB));
-
-    const result = await runProbe(dir);
+    // Point the worker at a closed port so every statement fails; acquisition
+    // must degrade to null (skip this round), not throw.
+    const result = await spawnWorker(dir, "probe", "x", {
+      PLL_SQLD_URL: "http://127.0.0.1:1",
+    }).result;
     expect(result.exitCode).toBe(0);
     expect(result.parsed).toEqual({ acquired: false });
   }, 30_000);

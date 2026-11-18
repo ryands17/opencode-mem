@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { tursoConnectionManager } from "../src/services/turso/connection-manager.js";
 import { registerV2Adapter } from "../src/v2/adapter.js";
+import { resetSqldState } from "./turso-test-utils.js";
 
 let tmpDir: string;
 
@@ -12,6 +13,7 @@ describe("V2 skills bridge helpers", () => {
     tmpDir = mkdtempSync(join(tmpdir(), "opencode-mem-v2-skills-"));
     const { CONFIG } = await import("../src/config.js");
     CONFIG.storagePath = tmpDir;
+    await resetSqldState();
     const { skillsManager } = await import("../src/services/skills/skills-manager.js");
     skillsManager.reset();
   });

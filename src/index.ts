@@ -42,6 +42,35 @@ import {
 } from "./services/ai/internal-capture-sessions.js";
 import { notifyAutoCaptureProviderStatus } from "./services/auto-capture-config-status.js";
 
+type ToastClient = Parameters<typeof notifyAutoCaptureProviderStatus>[0];
+
+function notifyMissingEmbeddingConfig(client?: ToastClient): void {
+  if (CONFIG.embeddingApiUrl && CONFIG.embeddingApiKey) return;
+
+  const missing = [
+    !CONFIG.embeddingApiUrl ? "embeddingApiUrl" : null,
+    !CONFIG.embeddingApiKey ? "embeddingApiKey" : null,
+  ].filter(Boolean);
+  const message =
+    `Remote embeddings are required — ${missing.join(", ")} is missing. ` +
+    `Set both in the global opencode-mem config. Memory capture and search stay ` +
+    `disabled until this is fixed.`;
+  log(`Embedding config missing. ${message}`);
+
+  if (!CONFIG.showErrorToasts || !client?.tui?.showToast) return;
+
+  client.tui
+    .showToast({
+      body: {
+        title: "Memory",
+        message,
+        variant: "error",
+        duration: 8000,
+      },
+    })
+    .catch(() => {});
+}
+
 export { INTERNAL_CAPTURE_SESSION_TITLE, isInternalCaptureSessionTitle };
 export {
   buildAutoCaptureConfigReminderMessage,
@@ -365,6 +394,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   const { directory } = ctx;
   initConfig(directory);
   notifyAutoCaptureProviderStatus(ctx.client);
+  notifyMissingEmbeddingConfig(ctx.client);
   const { startAutoUpdate } = await import("./services/auto-update.js");
   startAutoUpdate(ctx, CONFIG.autoUpdate);
   const tags = getTags(directory);
@@ -484,18 +514,12 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     } catch (error) {
       log("Turso ready gate failed before web server start", { error: String(error) });
       if (ctx.client?.tui) {
-        const { isTursoMultiProcessLockError } =
-          await import("./services/turso/connection-manager.js");
-        const lockHeld = isTursoMultiProcessLockError(error);
         ctx.client.tui
           .showToast({
             body: {
               title: "Memory Explorer",
-              message: lockHeld
-                ? process.platform === "win32"
-                  ? "Memory DB locked by another OpenCode session (Windows is single-owner)"
-                  : "Memory DB locked by another session — close it or restart all OpenCode windows"
-                : "Database migration failed; web UI not started",
+              message:
+                "sqld unavailable; web UI not started. Check sqldUrl and that the server is running.",
               variant: "error",
               duration: 8000,
             },
@@ -642,7 +666,8 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     }
     // Registering listeners disables the runtime's default termination.
     // After cleanup, remove ours and re-raise so the host can exit (#408).
-    // Avoid forced process exit here — that crashes onnxruntime-node finalizers (#114).
+    // Avoid forced process exit here — the host may still be tearing down
+    // native resources registered by other plugins (#114).
     process.off("SIGINT", shutdownHandler);
     process.off("SIGTERM", shutdownHandler);
     process.kill(process.pid, signal);

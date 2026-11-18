@@ -1,8 +1,6 @@
-import { existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { TursoDb } from "./turso-db.js";
 import { log } from "../logger.js";
-import { withSqliteFileLockRetry, copySqliteDatabase } from "./sqlite-handle-release.js";
 
 export type SchemaMigration = {
   version: number;
@@ -10,22 +8,28 @@ export type SchemaMigration = {
   statements: Array<{ sql: string; args?: Array<string | number | null> }>;
 };
 
-async function getUserVersion(db: TursoDb): Promise<number> {
-  const row = await db.get<{ user_version?: number }>(`PRAGMA user_version`);
-  return Number(row?.user_version ?? 0);
+const VERSION_TABLE_DDL = `
+  CREATE TABLE IF NOT EXISTS _opencode_mem_schema_versions (
+    label TEXT PRIMARY KEY,
+    version INTEGER NOT NULL
+  )
+`;
+
+async function getUserVersion(db: TursoDb, label: string): Promise<number> {
+  await db.execute(VERSION_TABLE_DDL);
+  const row = await db.get<{ version?: number }>(
+    `SELECT version FROM _opencode_mem_schema_versions WHERE label = ?`,
+    [label]
+  );
+  return Number(row?.version ?? 0);
 }
 
-async function setUserVersion(db: TursoDb, version: number): Promise<void> {
-  await db.run(`PRAGMA user_version = ${Math.trunc(version)}`);
-}
-
-function backupBeforeDestructive(dbPath: string | undefined, fromVersion: number): string | null {
-  if (!dbPath || !existsSync(dbPath) || fromVersion <= 0) return null;
-  const backupPath = `${dbPath}.schema-v${fromVersion}-${Date.now()}.bak`;
-  const dir = dirname(backupPath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  copySqliteDatabase(dbPath, backupPath);
-  return backupPath;
+async function setUserVersion(db: TursoDb, label: string, version: number): Promise<void> {
+  await db.run(
+    `INSERT INTO _opencode_mem_schema_versions (label, version) VALUES (?, ?)
+     ON CONFLICT(label) DO UPDATE SET version = excluded.version`,
+    [label, Math.trunc(version)]
+  );
 }
 
 export async function applySchemaMigrations(
@@ -33,47 +37,23 @@ export async function applySchemaMigrations(
   migrations: SchemaMigration[],
   options?: { dbPath?: string; label?: string }
 ): Promise<number> {
+  const label = options?.label ?? "default";
   const sorted = [...migrations].sort((a, b) => a.version - b.version);
-  const current = await getUserVersion(db);
+  const current = await getUserVersion(db, label);
   const pending = sorted.filter((migration) => migration.version > current);
   if (pending.length === 0) return current;
 
   const target = pending[pending.length - 1]!.version;
-  const backupPath = backupBeforeDestructive(options?.dbPath, current);
-  if (backupPath) {
-    log("Schema migration backup created", {
-      label: options?.label,
-      from: current,
-      to: target,
-      backupPath,
+  for (const migration of pending) {
+    await db.batch(migration.statements, "write");
+    await setUserVersion(db, label, migration.version);
+    log("Applied schema migration", {
+      label,
+      version: migration.version,
+      description: migration.description,
     });
   }
-
-  try {
-    for (const migration of pending) {
-      await db.batch(migration.statements, "write");
-      await setUserVersion(db, migration.version);
-      log("Applied schema migration", {
-        label: options?.label,
-        version: migration.version,
-        description: migration.description,
-      });
-    }
-    return target;
-  } catch (error) {
-    if (backupPath && options?.dbPath) {
-      try {
-        await db.close();
-      } catch {
-        // ignore
-      }
-      await withSqliteFileLockRetry(() => {
-        if (existsSync(options.dbPath!)) unlinkSync(options.dbPath!);
-        renameSync(backupPath, options.dbPath!);
-      });
-    }
-    throw error;
-  }
+  return target;
 }
 
 /** Memory shard schema without DiskANN indexes (exact cosine search). */
@@ -82,7 +62,7 @@ export function memoryShardMigrations(dimensions: number): SchemaMigration[] {
   return [
     {
       version: 1,
-      description: "Baseline memories + shard_metadata for @tursodatabase/database",
+      description: "Baseline memories + shard_metadata for the sqld backend",
       statements: [
         {
           sql: `
@@ -123,8 +103,7 @@ export function memoryShardMigrations(dimensions: number): SchemaMigration[] {
     },
     {
       version: 2,
-      description:
-        "Indexed session_id for session lookup (FTS5 unavailable on @tursodatabase/database)",
+      description: "Indexed session_id for session lookup (FTS5 unavailable on sqld/libSQL)",
       statements: [
         { sql: `ALTER TABLE memories ADD COLUMN session_id TEXT` },
         { sql: `CREATE INDEX IF NOT EXISTS idx_session_id ON memories(session_id)` },

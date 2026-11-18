@@ -1,20 +1,27 @@
-import { join, basename, resolve, relative } from "node:path";
-import { existsSync, unlinkSync } from "node:fs";
+import { basename } from "node:path";
 import { CONFIG } from "../../config.js";
 import { assertSafeScopeHash } from "../memory-scope.js";
 import { tursoConnectionManager } from "./connection-manager.js";
 import { log } from "../logger.js";
-import { assertNoTursoMigrationInProgress } from "./operation-lock.js";
-import { withSqliteFileLockRetry, renameSqliteDatabase } from "./sqlite-handle-release.js";
 import type { ShardInfo } from "./types.js";
 import type { TursoDb } from "./turso-db.js";
-import {
-  applySchemaMigrations,
-  METADATA_DB_MIGRATIONS,
-  memoryShardMigrations,
-} from "./schema-migrations.js";
+import { applySchemaMigrations, memoryShardMigrations } from "./schema-migrations.js";
 
-const METADATA_DB_NAME = "metadata.db";
+const SHARD_DB_KEY = "sqld:main";
+
+const REGISTRY_DDL = `
+  CREATE TABLE IF NOT EXISTS shards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL,
+    scope_hash TEXT NOT NULL,
+    shard_index INTEGER NOT NULL,
+    db_path TEXT NOT NULL,
+    vector_count INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    UNIQUE(scope, scope_hash, shard_index)
+  )
+`;
 
 function getValidatedEmbeddingDimensions(dimensions = CONFIG.embeddingDimensions): number {
   const dims = dimensions;
@@ -30,15 +37,13 @@ function isUniqueConstraintError(error: unknown): boolean {
 }
 
 export class TursoShardManager {
-  private metadataDb: TursoDb | null = null;
-  private metadataPath = "";
+  private db: TursoDb | null = null;
   private initPromise: Promise<void> | null = null;
   private readonly writeLocks = new Map<string, Promise<unknown>>();
 
   reset(): void {
-    this.metadataDb = null;
+    this.db = null;
     this.initPromise = null;
-    this.metadataPath = "";
     this.writeLocks.clear();
   }
 
@@ -68,98 +73,57 @@ export class TursoShardManager {
   }
 
   private async ensureInitialized(): Promise<TursoDb> {
-    this.metadataPath = join(CONFIG.storagePath, METADATA_DB_NAME);
-
-    if (this.initPromise) {
-      await this.initPromise;
-    }
-
-    // Connection manager is authoritative: migrators may close/replace metadata.db
-    // underneath a cached TursoDb handle (encryption/engine rewrite).
-    if (this.metadataDb) {
-      const current = await tursoConnectionManager.getConnection(this.metadataPath);
-      if (current === this.metadataDb) {
-        return this.metadataDb;
-      }
-      this.metadataDb = current;
-      await this.initMetadataDb(this.metadataDb);
-      return this.metadataDb;
-    }
+    if (this.initPromise) await this.initPromise;
+    if (this.db) return this.db;
 
     this.initPromise = (async () => {
       try {
-        this.metadataDb = await tursoConnectionManager.getConnection(this.metadataPath);
-        await this.initMetadataDb(this.metadataDb);
+        const db = await tursoConnectionManager.getConnection(SHARD_DB_KEY);
+        await db.execute(REGISTRY_DDL);
+        await db.execute(
+          `CREATE INDEX IF NOT EXISTS idx_active_shards ON shards(scope, scope_hash, is_active)`
+        );
+        this.db = db;
       } catch (error) {
         this.initPromise = null;
-        this.metadataDb = null;
+        this.db = null;
         throw error;
       }
     })();
 
     await this.initPromise;
-    return this.metadataDb!;
+    return this.db!;
   }
 
-  private async initMetadataDb(db: TursoDb): Promise<void> {
-    await applySchemaMigrations(db, METADATA_DB_MIGRATIONS, {
-      dbPath: this.metadataPath,
-      label: "metadata.db",
-    });
-  }
-
+  /** Logical shard key. There is one sqld database; this is not a file path. */
   getShardPath(scope: "user" | "project", scopeHash: string, shardIndex: number): string {
     assertSafeScopeHash(scopeHash);
-    const scopeDir = resolve(CONFIG.storagePath, `${scope}s`);
-    const fullPath = resolve(join(scopeDir, `${scope}_${scopeHash}_shard_${shardIndex}.db`));
-    const relativePath = relative(scopeDir, fullPath);
-    if (relativePath.startsWith("..") || relativePath.includes("..")) {
-      throw new Error(`Shard path escapes storage directory: ${fullPath}`);
-    }
-    return fullPath;
+    return `sqld://${scope}/${scopeHash}/shard_${shardIndex}`;
   }
 
-  private resolveStoredPath(storedPath: string, scope: string): string {
-    const fileName = basename(storedPath);
-    return join(CONFIG.storagePath, `${scope}s`, fileName);
+  private scopeSuffix(scope: "user" | "project", scopeHash: string): string {
+    return `${scope}_${scopeHash}`;
   }
 
   async getActiveShard(scope: "user" | "project", scopeHash: string): Promise<ShardInfo | null> {
-    const metadataDb = await this.ensureInitialized();
-    const row = await metadataDb.get(
-      `
-      SELECT * FROM shards
-      WHERE scope = ? AND scope_hash = ? AND is_active = 1
-      ORDER BY shard_index DESC LIMIT 1
-    `,
+    const db = await this.ensureInitialized();
+    const row = await db.get(
+      `SELECT * FROM shards WHERE scope = ? AND scope_hash = ? AND is_active = 1
+       ORDER BY shard_index DESC LIMIT 1`,
       [scope, scopeHash]
     );
-
-    if (!row) return null;
-    return this.rowToShardInfo(row);
+    return row ? this.rowToShardInfo(row) : null;
   }
 
   async getAllShards(scope: "user" | "project", scopeHash: string): Promise<ShardInfo[]> {
-    const metadataDb = await this.ensureInitialized();
+    const db = await this.ensureInitialized();
     const rows =
       scopeHash === ""
-        ? await metadataDb.all(
-            `
-          SELECT * FROM shards
-          WHERE scope = ?
-          ORDER BY shard_index ASC
-        `,
-            [scope]
-          )
-        : await metadataDb.all(
-            `
-          SELECT * FROM shards
-          WHERE scope = ? AND scope_hash = ?
-          ORDER BY shard_index ASC
-        `,
+        ? await db.all(`SELECT * FROM shards WHERE scope = ? ORDER BY shard_index ASC`, [scope])
+        : await db.all(
+            `SELECT * FROM shards WHERE scope = ? AND scope_hash = ? ORDER BY shard_index ASC`,
             [scope, scopeHash]
           );
-
     return rows.map((row) => this.rowToShardInfo(row));
   }
 
@@ -168,39 +132,27 @@ export class TursoShardManager {
     scopeHash: string,
     shardIndex: number
   ): Promise<ShardInfo> {
-    const metadataDb = await this.ensureInitialized();
-    const fullPath = this.getShardPath(scope, scopeHash, shardIndex);
-    const storedPath = join(`${scope}s`, basename(fullPath)).replace(/\\/g, "/");
+    const db = await this.ensureInitialized();
+    const shardPath = this.getShardPath(scope, scopeHash, shardIndex);
+    const storedPath = `${scope}_${scopeHash}_shard_${shardIndex}`;
     const now = Date.now();
 
-    // Initialize the shard file BEFORE inserting the registry row. If init throws
-    // (disk full, permissions), the registry stays free of an orphan row that points
-    // at an uninitialized file — such a row would later fail isShardValid on every
-    // getWriteShard and brick all writes to this scope. initShardDb is idempotent.
-    const shardDb = await tursoConnectionManager.getConnection(fullPath);
-    await this.initShardDb(shardDb);
+    await this.initShardDb(db);
 
     let result;
     try {
-      result = await metadataDb.execute(
-        `
-      INSERT INTO shards (scope, scope_hash, shard_index, db_path, vector_count, is_active, created_at)
-      VALUES (?, ?, ?, ?, 0, 1, ?)
-    `,
+      result = await db.execute(
+        `INSERT INTO shards (scope, scope_hash, shard_index, db_path, vector_count, is_active, created_at)
+         VALUES (?, ?, ?, ?, 0, 1, ?)`,
         [scope, scopeHash, shardIndex, storedPath, now]
       );
     } catch (error) {
       if (isUniqueConstraintError(error)) {
-        const existing = await metadataDb.get(
-          `
-          SELECT * FROM shards
-          WHERE scope = ? AND scope_hash = ? AND shard_index = ?
-        `,
+        const existing = await db.get(
+          `SELECT * FROM shards WHERE scope = ? AND scope_hash = ? AND shard_index = ?`,
           [scope, scopeHash, shardIndex]
         );
-        if (existing) {
-          return this.rowToShardInfo(existing);
-        }
+        if (existing) return this.rowToShardInfo(existing);
       }
       throw error;
     }
@@ -210,7 +162,7 @@ export class TursoShardManager {
       scope,
       scopeHash,
       shardIndex,
-      dbPath: fullPath,
+      dbPath: shardPath,
       vectorCount: 0,
       isActive: true,
       createdAt: now,
@@ -226,30 +178,25 @@ export class TursoShardManager {
     isActive: boolean
   ): Promise<ShardInfo> {
     assertSafeScopeHash(scopeHash);
-    const metadataDb = await this.ensureInitialized();
-    const storedPath = join(`${scope}s`, basename(dbPath)).replace(/\\/g, "/");
+    const db = await this.ensureInitialized();
+    const storedPath = `${scope}_${scopeHash}_shard_${shardIndex}`;
     const now = Date.now();
 
-    await metadataDb.execute(
-      `
-        INSERT INTO shards (
-          scope, scope_hash, shard_index, db_path, vector_count, is_active, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(scope, scope_hash, shard_index) DO UPDATE SET
-          db_path = excluded.db_path,
-          vector_count = excluded.vector_count,
-          is_active = excluded.is_active
-      `,
+    await db.execute(
+      `INSERT INTO shards (scope, scope_hash, shard_index, db_path, vector_count, is_active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(scope, scope_hash, shard_index) DO UPDATE SET
+         db_path = excluded.db_path,
+         vector_count = excluded.vector_count,
+         is_active = excluded.is_active`,
       [scope, scopeHash, shardIndex, storedPath, vectorCount, isActive ? 1 : 0, now]
     );
 
-    const row = await metadataDb.get(
+    const row = await db.get(
       `SELECT * FROM shards WHERE scope = ? AND scope_hash = ? AND shard_index = ?`,
       [scope, scopeHash, shardIndex]
     );
-    if (!row) {
-      throw new Error(`Failed to register shard ${scope}/${scopeHash}#${shardIndex}`);
-    }
+    if (!row) throw new Error(`Failed to register shard ${scope}/${scopeHash}#${shardIndex}`);
     return this.rowToShardInfo(row);
   }
 
@@ -259,42 +206,34 @@ export class TursoShardManager {
     embeddingModel = CONFIG.embeddingModel
   ): Promise<void> {
     const dims = getValidatedEmbeddingDimensions(dimensions);
-
     await this.ensureShardSchema(db, dims);
-
     await db.batch([
       {
-        sql: `
-          INSERT OR REPLACE INTO shard_metadata (key, value)
-          VALUES ('embedding_dimensions', ?)
-        `,
+        sql: `INSERT OR REPLACE INTO shard_metadata (key, value) VALUES ('embedding_dimensions', ?)`,
         args: [String(dims)],
       },
       {
-        sql: `
-          INSERT OR REPLACE INTO shard_metadata (key, value)
-          VALUES ('embedding_model', ?)
-        `,
+        sql: `INSERT OR REPLACE INTO shard_metadata (key, value) VALUES ('embedding_model', ?)`,
         args: [embeddingModel],
       },
     ]);
   }
 
-  /** Apply pending memory-shard schema migrations without rewriting shard_metadata. */
   async ensureShardSchema(db: TursoDb, dimensions = CONFIG.embeddingDimensions): Promise<void> {
     const dims = getValidatedEmbeddingDimensions(dimensions);
-    await applySchemaMigrations(db, memoryShardMigrations(dims), {
-      label: "memory-shard",
-    });
+    await applySchemaMigrations(db, memoryShardMigrations(dims), { label: "memory-shard" });
   }
 
   private rowToShardInfo(row: Record<string, unknown>): ShardInfo {
+    const scope = String(row.scope) as "user" | "project";
+    const scopeHash = String(row.scope_hash);
+    const shardIndex = Number(row.shard_index);
     return {
       id: Number(row.id),
-      scope: row.scope as "user" | "project",
-      scopeHash: String(row.scope_hash),
-      shardIndex: Number(row.shard_index),
-      dbPath: this.resolveStoredPath(String(row.db_path), String(row.scope)),
+      scope,
+      scopeHash,
+      shardIndex,
+      dbPath: this.getShardPath(scope, scopeHash, shardIndex),
       vectorCount: Number(row.vector_count),
       isActive: Number(row.is_active) === 1,
       createdAt: Number(row.created_at),
@@ -304,173 +243,106 @@ export class TursoShardManager {
   private async hasMatchingEmbeddingDimensions(db: TursoDb, shard: ShardInfo): Promise<boolean> {
     const row = await db.get(`SELECT value FROM shard_metadata WHERE key = 'embedding_dimensions'`);
     if (!row?.value) {
-      log("Shard missing embedding_dimensions metadata", {
-        dbPath: shard.dbPath,
-        shardId: shard.id,
-      });
+      log("Shard missing embedding_dimensions metadata", { shardId: shard.id });
       return false;
     }
-
     const storedDimensions = Number(row.value);
     if (storedDimensions !== getValidatedEmbeddingDimensions()) {
       log("Shard embedding dimensions mismatch", {
-        dbPath: shard.dbPath,
         shardId: shard.id,
         storedDimensions,
         configDimensions: CONFIG.embeddingDimensions,
       });
       return false;
     }
-
     return true;
   }
 
   private async syncShardVectorCount(shard: ShardInfo): Promise<ShardInfo> {
-    const db = await tursoConnectionManager.getConnection(shard.dbPath);
+    const db = await this.ensureInitialized();
     const row = await db.get(`SELECT COUNT(*) as count FROM memories`);
     const count = Number(row?.count ?? 0);
-
-    if (count === shard.vectorCount) {
-      return shard;
-    }
-
-    const metadataDb = await this.ensureInitialized();
-    await metadataDb.run(`UPDATE shards SET vector_count = ? WHERE id = ?`, [count, shard.id]);
+    if (count === shard.vectorCount) return shard;
+    await db.run(`UPDATE shards SET vector_count = ? WHERE id = ?`, [count, shard.id]);
     return { ...shard, vectorCount: count };
   }
 
   private async isShardValid(shard: ShardInfo): Promise<boolean> {
-    if (!existsSync(shard.dbPath)) {
-      log("Shard DB file missing", { dbPath: shard.dbPath, shardId: shard.id });
-      return false;
-    }
-
     try {
-      const db = await tursoConnectionManager.getConnection(shard.dbPath);
+      const db = await this.ensureInitialized();
       const result = await db.get(
         `SELECT name FROM sqlite_master WHERE type='table' AND name='memories'`
       );
-      if (!result) {
-        log("Shard DB missing 'memories' table", {
-          dbPath: shard.dbPath,
-          shardId: shard.id,
-        });
-        return false;
-      }
-
-      if (!(await this.hasMatchingEmbeddingDimensions(db, shard))) {
-        return false;
-      }
-
-      return true;
+      return Boolean(result) && (await this.hasMatchingEmbeddingDimensions(db, shard));
     } catch (error) {
-      log("Error validating shard DB", {
-        dbPath: shard.dbPath,
-        error: String(error),
-      });
+      log("Error validating shard", { shardId: shard.id, error: String(error) });
       return false;
     }
   }
 
   async getWriteShard(scope: "user" | "project", scopeHash: string): Promise<ShardInfo> {
-    assertNoTursoMigrationInProgress();
-    for (let attempt = 0; attempt < 3; attempt++) {
-      let shard = await this.getActiveShard(scope, scopeHash);
-
-      if (!shard) {
-        return this.createShard(scope, scopeHash, 0);
-      }
-
-      if (!(await this.isShardValid(shard))) {
-        throw new Error(
-          `Shard ${shard.scope}/${shard.scopeHash}#${shard.shardIndex} is incompatible or corrupt. ` +
-            `The original database was left untouched at ${shard.dbPath}; run the migration or restore it before writing.`
-        );
-      }
-
-      shard = await this.syncShardVectorCount(shard);
-
-      if (shard.vectorCount >= CONFIG.maxVectorsPerShard) {
-        await this.markShardReadOnly(shard.id);
-        return this.createShard(scope, scopeHash, shard.shardIndex + 1);
-      }
-
-      return shard;
+    let shard = await this.getActiveShard(scope, scopeHash);
+    if (!shard) return this.createShard(scope, scopeHash, 0);
+    if (!(await this.isShardValid(shard))) {
+      throw new Error(
+        `Memory store is incompatible or corrupt (shard ${scope}/${scopeHash}). ` +
+          `Run the model migration or restore the sqld database before writing.`
+      );
     }
-
-    throw new Error(`Failed to resolve write shard for ${scope}/${scopeHash}`);
-  }
-
-  private async markShardReadOnly(shardId: number): Promise<void> {
-    const metadataDb = await this.ensureInitialized();
-    await metadataDb.run(`UPDATE shards SET is_active = 0 WHERE id = ?`, [shardId]);
+    shard = await this.syncShardVectorCount(shard);
+    return shard;
   }
 
   async incrementVectorCount(shardId: number): Promise<void> {
-    const metadataDb = await this.ensureInitialized();
-    await metadataDb.run(`UPDATE shards SET vector_count = vector_count + 1 WHERE id = ?`, [
-      shardId,
-    ]);
+    const db = await this.ensureInitialized();
+    await db.run(`UPDATE shards SET vector_count = vector_count + 1 WHERE id = ?`, [shardId]);
   }
 
   async decrementVectorCount(shardId: number): Promise<void> {
-    const metadataDb = await this.ensureInitialized();
-    await metadataDb.run(
+    const db = await this.ensureInitialized();
+    await db.run(
       `UPDATE shards SET vector_count = vector_count - 1 WHERE id = ? AND vector_count > 0`,
       [shardId]
     );
   }
 
   async setVectorCount(shardId: number, count: number): Promise<void> {
-    if (!Number.isInteger(count) || count < 0) {
-      throw new Error(`Invalid vector count: ${count}`);
-    }
-    const metadataDb = await this.ensureInitialized();
-    await metadataDb.run(`UPDATE shards SET vector_count = ? WHERE id = ?`, [count, shardId]);
+    if (!Number.isInteger(count) || count < 0) throw new Error(`Invalid vector count: ${count}`);
+    const db = await this.ensureInitialized();
+    await db.run(`UPDATE shards SET vector_count = ? WHERE id = ?`, [count, shardId]);
   }
 
   async getShardById(shardId: number): Promise<ShardInfo | null> {
-    const metadataDb = await this.ensureInitialized();
-    const row = await metadataDb.get(`SELECT * FROM shards WHERE id = ?`, [shardId]);
+    const db = await this.ensureInitialized();
+    const row = await db.get(`SELECT * FROM shards WHERE id = ?`, [shardId]);
     return row ? this.rowToShardInfo(row) : null;
   }
 
   async getShardByPath(dbPath: string): Promise<ShardInfo | null> {
-    const metadataDb = await this.ensureInitialized();
-    const fileName = basename(dbPath);
-    // Stored db_path is always `<scope>s/<basename>` (see createShard/registerExistingShard),
-    // so anchor on the "/" separator. Escape LIKE metacharacters in the filename — otherwise
-    // the "_" in shard names like `user_<hash>_0.db` would match any character.
-    const escaped = fileName.replace(/[\\%_]/g, "\\$&");
-    const row = await metadataDb.get(
-      `SELECT * FROM shards WHERE db_path LIKE '%/' || ? ESCAPE '\\'`,
-      [escaped]
+    const db = await this.ensureInitialized();
+    const match = dbPath.match(/(user|project)_([a-f0-9]{16})_shard_(\d+)/);
+    if (!match) return null;
+    const row = await db.get(
+      `SELECT * FROM shards WHERE scope = ? AND scope_hash = ? AND shard_index = ?`,
+      [match[1]!, match[2]!, Number(match[3])]
     );
-    if (!row) return null;
-    return this.rowToShardInfo(row);
+    return row ? this.rowToShardInfo(row) : null;
   }
 
   async deleteShard(shardId: number): Promise<void> {
-    const metadataDb = await this.ensureInitialized();
-    const row = await metadataDb.get(`SELECT * FROM shards WHERE id = ?`, [shardId]);
-
+    const db = await this.ensureInitialized();
+    const row = await db.get(`SELECT * FROM shards WHERE id = ?`, [shardId]);
     if (!row) return;
+    await db.run(`DELETE FROM memories WHERE instr(container_tag, ?) > 0`, [
+      this.scopeSuffix(String(row.scope) as "user" | "project", String(row.scope_hash)),
+    ]);
+    await db.run(`DELETE FROM shards WHERE id = ?`, [shardId]);
+  }
 
-    const fullPath = this.resolveStoredPath(String(row.db_path), String(row.scope));
-    await tursoConnectionManager.closeConnection(fullPath);
-
-    try {
-      if (existsSync(fullPath)) {
-        await withSqliteFileLockRetry(() => unlinkSync(fullPath));
-      }
-    } catch (error) {
-      log("Error deleting shard file", {
-        dbPath: fullPath,
-        error: String(error),
-      });
-    }
-
-    await metadataDb.run(`DELETE FROM shards WHERE id = ?`, [shardId]);
+  /** Removes only the registry row; memories in the shared DB are untouched. */
+  async removeShardRegistry(shardId: number): Promise<void> {
+    const db = await this.ensureInitialized();
+    await db.run(`DELETE FROM shards WHERE id = ?`, [shardId]);
   }
 
   async archiveShard(
@@ -478,38 +350,11 @@ export class TursoShardManager {
     reason: string,
     archivePathOverride?: string
   ): Promise<string | null> {
-    const metadataDb = await this.ensureInitialized();
-    const row = await metadataDb.get(`SELECT * FROM shards WHERE id = ?`, [shardId]);
-    if (!row) return null;
-
-    const fullPath = this.resolveStoredPath(String(row.db_path), String(row.scope));
-    await tursoConnectionManager.closeConnection(fullPath);
-    const archivePath =
-      archivePathOverride ?? `${fullPath}.${reason}-${process.pid}-${Date.now()}.bak`;
-    const scopeDir = resolve(CONFIG.storagePath, `${String(row.scope)}s`);
-    const archiveRelativePath = relative(scopeDir, resolve(archivePath));
-    if (archiveRelativePath.startsWith("..") || archiveRelativePath.includes("..")) {
-      throw new Error(`Archive path escapes storage directory: ${archivePath}`);
-    }
-
-    if (existsSync(fullPath)) {
-      await withSqliteFileLockRetry(() => renameSqliteDatabase(fullPath, archivePath));
-    }
-    try {
-      await metadataDb.run(`DELETE FROM shards WHERE id = ?`, [shardId]);
-    } catch (error) {
-      if (existsSync(archivePath) && !existsSync(fullPath)) {
-        await withSqliteFileLockRetry(() => renameSqliteDatabase(archivePath, fullPath));
-      }
-      throw error;
-    }
-    return existsSync(archivePath) ? archivePath : null;
+    await this.deleteShard(shardId);
+    log("Archived logical shard in sqld", { shardId, reason, archivePathOverride });
+    return `sqld://shard/${shardId}/archived/${reason}`;
   }
 
-  /**
-   * Reassign a registered shard to a new scope hash and on-disk filename.
-   * Caller must close the DB connection and rename the file before calling this.
-   */
   async reassignShardScope(
     shardId: number,
     newScopeHash: string,
@@ -518,28 +363,31 @@ export class TursoShardManager {
     isActive: boolean
   ): Promise<ShardInfo> {
     assertSafeScopeHash(newScopeHash);
-    const metadataDb = await this.ensureInitialized();
-    const row = await metadataDb.get(`SELECT * FROM shards WHERE id = ?`, [shardId]);
-    if (!row) {
-      throw new Error(`Shard ${shardId} not found in metadata registry`);
-    }
+    const db = await this.ensureInitialized();
+    const row = await db.get(`SELECT * FROM shards WHERE id = ?`, [shardId]);
+    if (!row) throw new Error(`Shard ${shardId} not found in metadata registry`);
 
     const scope = String(row.scope) as "user" | "project";
-    const storedPath = join(`${scope}s`, basename(newDbPath)).replace(/\\/g, "/");
-
-    await metadataDb.run(
-      `
-      UPDATE shards
-      SET scope_hash = ?, db_path = ?, vector_count = ?, is_active = ?
-      WHERE id = ?
-    `,
-      [newScopeHash, storedPath, vectorCount, isActive ? 1 : 0, shardId]
+    const oldSuffix = this.scopeSuffix(scope, String(row.scope_hash));
+    const newSuffix = this.scopeSuffix(scope, newScopeHash);
+    await db.run(
+      `UPDATE memories SET container_tag = replace(container_tag, ?, ?) WHERE instr(container_tag, ?) > 0`,
+      [oldSuffix, newSuffix, oldSuffix]
     );
 
-    const updated = await metadataDb.get(`SELECT * FROM shards WHERE id = ?`, [shardId]);
-    if (!updated) {
-      throw new Error(`Failed to reassign shard ${shardId}`);
-    }
+    await db.run(
+      `UPDATE shards SET scope_hash = ?, db_path = ?, vector_count = ?, is_active = ? WHERE id = ?`,
+      [
+        newScopeHash,
+        basename(newDbPath).replace(/\.db$/, ""),
+        vectorCount,
+        isActive ? 1 : 0,
+        shardId,
+      ]
+    );
+
+    const updated = await db.get(`SELECT * FROM shards WHERE id = ?`, [shardId]);
+    if (!updated) throw new Error(`Failed to reassign shard ${shardId}`);
     return this.rowToShardInfo(updated);
   }
 }

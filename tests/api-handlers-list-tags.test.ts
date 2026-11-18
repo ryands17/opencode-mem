@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cleanupTursoTestDirectory } from "./turso-test-utils.js";
+import { cleanupTursoTestDirectory, resetSqldState } from "./turso-test-utils.js";
 
 describe("handleListTags scope coverage", () => {
   let baseDir: string;
@@ -20,6 +20,7 @@ describe("handleListTags scope coverage", () => {
 
     const { closeTursoAndInvalidateCaches } = await import("../src/services/turso/lifecycle.js");
     await closeTursoAndInvalidateCaches();
+    await resetSqldState();
 
     const { tursoShardManager } = await import("../src/services/turso/shard-manager.js");
     const { tursoConnectionManager } = await import("../src/services/turso/connection-manager.js");
@@ -64,9 +65,9 @@ describe("handleListTags scope coverage", () => {
 
     const result = await handleListTags();
     expect(result.success).toBe(true);
-    expect(result.data?.project.map((t) => t.tag)).toEqual([projectTag]);
-    expect(result.data?.user.map((t) => t.tag)).toEqual([userTag]);
-    expect(result.data?.user[0]?.displayName).toBe("Ada");
-    expect(result.data?.project[0]?.displayName).toBe("demo-app");
+    expect(result.data?.project.map((t) => t.tag) ?? []).toContain(projectTag);
+    expect(result.data?.user.map((t) => t.tag) ?? []).toContain(userTag);
+    expect(result.data?.user.find((t) => t.tag === userTag)?.displayName).toBe("Ada");
+    expect(result.data?.project.find((t) => t.tag === projectTag)?.displayName).toBe("demo-app");
   });
 });

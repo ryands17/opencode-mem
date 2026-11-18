@@ -1,8 +1,9 @@
+import { tursoVectorSearch } from "../src/services/turso/vector-search.js";
 import { afterEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { cleanupTursoTestDirectory } from "./turso-test-utils.js";
+import { cleanupTursoTestDirectory, resetSqldState } from "./turso-test-utils.js";
 
 describe("memory export/import portability", () => {
   let baseDir: string;
@@ -36,6 +37,11 @@ describe("memory export/import portability", () => {
     baseDir = mkdtempSync(join(tmpdir(), "memory-portability-"));
     projectDir = join(baseDir, "project");
     mkdirSync(projectDir, { recursive: true });
+    mkdirSync(join(baseDir, "storage"), { recursive: true });
+
+    const { closeTursoAndInvalidateCaches } = await import("../src/services/turso/lifecycle.js");
+    await closeTursoAndInvalidateCaches();
+    await resetSqldState();
 
     const { CONFIG } = await import("../src/config.js");
     CONFIG.storagePath = join(baseDir, "storage");
@@ -45,7 +51,6 @@ describe("memory export/import portability", () => {
     const { getProjectTagInfo } = await import("../src/services/tags.js");
     const { tursoShardManager } = await import("../src/services/turso/shard-manager.js");
     const { tursoConnectionManager } = await import("../src/services/turso/connection-manager.js");
-    const { tursoVectorSearch } = await import("../src/services/turso/vector-search.js");
 
     const tag = getProjectTagInfo(projectDir);
     const hash = tag.tag.split("_").pop()!;
@@ -102,19 +107,18 @@ describe("memory export/import portability", () => {
       currentDirectory: otherDir,
       inputPath: outputPath,
     });
-    expect(importResult.success).toBe(true);
+    expect(importResult.success, JSON.stringify(importResult)).toBe(true);
     expect(importResult.imported).toBe(1);
 
     const { getProjectTagInfo } = await import("../src/services/tags.js");
     const { tursoShardManager } = await import("../src/services/turso/shard-manager.js");
     const { tursoConnectionManager } = await import("../src/services/turso/connection-manager.js");
-    const { tursoVectorSearch } = await import("../src/services/turso/vector-search.js");
     const otherTag = getProjectTagInfo(otherDir);
     const otherHash = otherTag.tag.split("_").pop()!;
     const shards = await tursoShardManager.getAllShards("project", otherHash);
     expect(shards.length).toBeGreaterThanOrEqual(1);
     const db = await tursoConnectionManager.getConnection(shards[0]!.dbPath);
-    const row = await tursoVectorSearch.getMemoryById(db, "mem_portable");
+    const row = await tursoVectorSearch.getMemoryById(db, `mem_portable_${otherHash}`);
     expect(row).toBeTruthy();
     expect(String(row!.container_tag)).toBe(otherTag.tag);
     expect(String(row!.project_path)).toBe(otherTag.projectPath);
@@ -125,6 +129,7 @@ describe("memory export/import portability", () => {
     expect(metadata.source).toBe("import");
     expect(metadata.keep).toBe(true);
     expect(metadata.originalContainerTag).toBe(tag.tag);
+    expect(metadata.originalId).toBe("mem_portable");
   });
 
   it("aborts import on duplicate ids without writing", async () => {
@@ -170,7 +175,6 @@ describe("memory export/import portability", () => {
     const { getProjectTagInfo } = await import("../src/services/tags.js");
     const { tursoShardManager } = await import("../src/services/turso/shard-manager.js");
     const { tursoConnectionManager } = await import("../src/services/turso/connection-manager.js");
-    const { tursoVectorSearch } = await import("../src/services/turso/vector-search.js");
     const hash = getProjectTagInfo(targetDir).tag.split("_").pop()!;
     const shard = await tursoShardManager.createShard("project", hash, 0);
     const { embeddingService } = await import("../src/services/embedding.js");
@@ -187,9 +191,13 @@ describe("memory export/import portability", () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain("ownership lost");
     expect(embedded).toBe(2);
+    const targetTag = getProjectTagInfo(targetDir).tag;
+    const targetDb = await tursoConnectionManager.getConnection(shard.dbPath);
     expect(
-      await tursoVectorSearch.countAllVectors(
-        await tursoConnectionManager.getConnection(shard.dbPath)
+      Number(
+        (await targetDb.get("SELECT COUNT(*) n FROM memories WHERE container_tag = ?", [
+          targetTag,
+        ]))!.n
       )
     ).toBe(0);
     // Release must not unlink the replacement owner's lease.
@@ -207,7 +215,6 @@ describe("memory export/import portability", () => {
       const { tursoShardManager } = await import("../src/services/turso/shard-manager.js");
       const { tursoConnectionManager } =
         await import("../src/services/turso/connection-manager.js");
-      const { tursoVectorSearch } = await import("../src/services/turso/vector-search.js");
       const { getProjectTagInfo } = await import("../src/services/tags.js");
       const { TURSO_LOCK_STALE_MS } = await import("../src/services/turso/operation-lock.js");
       const inputPath = join(baseDir, "memories.json");
@@ -265,7 +272,13 @@ describe("memory export/import portability", () => {
           tursoVectorSearch.insertVectorInTransaction = insert;
           tursoShardManager.setVectorCount = setCount;
           if (failure === "mid-transaction") {
-            expect(await tursoVectorSearch.countAllVectors(db)).toBe(0);
+            expect(
+              Number(
+                (await db.get("SELECT COUNT(*) n FROM memories WHERE container_tag = ?", [
+                  tag.tag,
+                ]))!.n
+              )
+            ).toBe(0);
             rolledBack = true;
             // Original transaction and scope lock have unwound. A successor can
             // now acquire the expired replacement and commit the very same ID.
@@ -297,7 +310,11 @@ describe("memory export/import portability", () => {
           ownershipLoss ? "ownership lost" : "ordinary metadata failure"
         );
         expect(rolledBack).toBe(failure === "mid-transaction");
-        expect(await tursoVectorSearch.countAllVectors(db)).toBe(ownershipLoss ? 1 : 0);
+        expect(
+          Number(
+            (await db.get("SELECT COUNT(*) n FROM memories WHERE container_tag = ?", [tag.tag]))!.n
+          )
+        ).toBe(ownershipLoss ? 1 : 0);
       } finally {
         tursoShardManager.withScopeWriteLock = scopeLock;
         tursoVectorSearch.insertVectorInTransaction = insert;
@@ -403,12 +420,15 @@ describe("memory export/import portability", () => {
     const { getProjectTagInfo } = await import("../src/services/tags.js");
     const { tursoShardManager } = await import("../src/services/turso/shard-manager.js");
     const { tursoConnectionManager } = await import("../src/services/turso/connection-manager.js");
-    const { tursoVectorSearch } = await import("../src/services/turso/vector-search.js");
     const hash = getProjectTagInfo(largeTarget).tag.split("_").pop()!;
     const shard = (await tursoShardManager.getAllShards("project", hash))[0]!;
+    const targetDb = await tursoConnectionManager.getConnection(shard.dbPath);
+    const targetTag = getProjectTagInfo(largeTarget).tag;
     expect(
-      await tursoVectorSearch.countAllVectors(
-        await tursoConnectionManager.getConnection(shard.dbPath)
+      Number(
+        (await targetDb.get("SELECT COUNT(*) n FROM memories WHERE container_tag = ?", [
+          targetTag,
+        ]))!.n
       )
     ).toBe(501);
   });

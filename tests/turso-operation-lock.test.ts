@@ -122,16 +122,6 @@ describe("turso operation lock staleness", () => {
     }
   }
 
-  it("allows legacy migration to acquire an aged-out live lock", async () => {
-    await withStorage();
-    const path = join(baseDir, ".turso-migrate.lock");
-    writeFileSync(path, JSON.stringify({ pid: process.pid, timestamp: oldTimestamp() }));
-    const { runLegacyTursoMigration } = await import("../src/services/turso/legacy-migrator.js");
-    await runLegacyTursoMigration();
-    expect(existsSync(path)).toBe(false);
-    expect(existsSync(join(baseDir, ".turso-migrated"))).toBe(true);
-  });
-
   it("keeps an old-acquired operation live after a progress heartbeat", async () => {
     const { acquireTursoOperationLock, assertNoTursoMigrationInProgress } = await withStorage();
     const release = acquireTursoOperationLock("test-heartbeat");

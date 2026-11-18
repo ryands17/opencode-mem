@@ -55,13 +55,13 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as importedFs from "node:fs";
 import * as importedChildProcess from "node:child_process";
-import { connect } from "@tursodatabase/database";
+import { createClient } from "@libsql/client/web";
 import { TursoDb } from "../../src/services/turso/turso-db.js";
-import { tursoExperimentalFeatures } from "../../src/services/turso/connection-manager.js";
 
 const storage = process.env.PLL_STORAGE;
 const mode = process.env.PLL_MODE;
 const label = process.env.PLL_LABEL ?? "x";
+const sqldUrl = process.env.PLL_SQLD_URL ?? "http://127.0.0.1:8080";
 if (!storage || !mode) {
   console.error("PLL_STORAGE and PLL_MODE are required");
   process.exit(2);
@@ -77,7 +77,7 @@ const loggerUrl = new URL("../../src/services/logger.js", import.meta.url).href;
 const lockUrl = new URL("../../src/services/user-profile/learning-lock.js", import.meta.url).href;
 
 mock.module(configUrl, () => ({
-  CONFIG: { storagePath: storage },
+  CONFIG: { storagePath: storage, sqldUrl },
   initConfig: () => {},
   isConfigured: () => true,
 }));
@@ -123,10 +123,9 @@ if (mode === "current-boot-invalid") {
 // darwin-sim: force the whole identity stack onto a simulated Darwin host.
 // The platform flip and the child_process mock (controlled `ps` lstart /
 // `sysctl` boottime) must be registered before learning-lock.js is imported.
-// The REAL Turso DB binding was imported at module top (before any
-// platform tampering), so the coordination DB stays fully real even with
-// process.platform === "darwin" — only the process/child_process boundary is
-// mocked, never the SQL/CAS path.
+// The sqld client is imported at module top (before any platform tampering),
+// so the coordination DB stays fully real even with process.platform ===
+// "darwin" — only the process/child_process boundary is mocked.
 //
 // PLL_LABEL selects the scenario:
 //   self-lstart   PLL_STARTTIME controls the lstart returned for ANY pid
@@ -208,13 +207,8 @@ function out(payload: Record<string, unknown>): void {
   console.log(JSON.stringify(payload));
 }
 
-async function openDb() {
-  const native = await connect(join(storage, ".profile-learning-coordination.db"), {
-    experimental: tursoExperimentalFeatures(),
-  });
-  const db = new TursoDb(native);
-  await db.run("PRAGMA busy_timeout = 5000");
-  return db;
+async function openDb(): Promise<TursoDb> {
+  return new TursoDb(createClient({ url: sqldUrl, concurrency: 1 }));
 }
 
 async function readOwnerToken(): Promise<string | null> {

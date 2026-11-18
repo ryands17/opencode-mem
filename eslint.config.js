@@ -43,6 +43,15 @@ export default ts.config(
     },
   },
   {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+        Bun: "readonly",
+      },
+    },
+  },
+  {
     files: [
       "web/src/**/*.svelte.ts",
       "web/src/**/*.svelte.js",

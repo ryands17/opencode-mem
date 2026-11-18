@@ -79,6 +79,7 @@ mock.module(configUrl, () => ({
     showUserProfileToasts: false,
     userProfileValidationEnabled: false,
     storagePath: cfg.storagePath,
+    sqldUrl: cfg.sqldUrl ?? "http://127.0.0.1:8080",
   },
   initConfig: () => {},
   isConfigured: () => true,

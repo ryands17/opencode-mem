@@ -213,7 +213,7 @@ export class TursoVectorSearch {
 
   /**
    * Keyword recall for hybrid ranking.
-   * `@tursodatabase/database` does not ship FTS5, so we use tokenized LIKE
+   * sqld/libSQL does not ship FTS5, so we use tokenized LIKE
    * over content/tags (bounded tokens, ESCAPE-safe).
    */
   private async keywordScores(

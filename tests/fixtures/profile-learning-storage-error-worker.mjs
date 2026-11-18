@@ -109,6 +109,7 @@ mock.module(configUrl, () => ({
     memoryApiUrl: "https://external.invalid/v1",
     memoryProvider: "openai-chat",
     storagePath: cfg.storagePath,
+    sqldUrl: cfg.sqldUrl ?? "http://127.0.0.1:8080",
   },
   initConfig: () => {},
   isConfigured: () => true,

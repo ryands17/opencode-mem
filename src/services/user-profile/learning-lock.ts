@@ -1,28 +1,23 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { connect } from "@tursodatabase/database";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { CONFIG } from "../../config.js";
 import { log } from "../logger.js";
-import { tursoExperimentalFeatures } from "../turso/connection-manager.js";
+import { tursoConnectionManager } from "../turso/connection-manager.js";
 import { TursoDb } from "../turso/turso-db.js";
 
 /**
- * Standalone coordination database (`@tursodatabase/database`) inside
- * CONFIG.storagePath. It is deliberately separate from the memory database:
- * every statement here is short and autonomous, and no transaction is ever
- * held across the LLM round trip, so lock traffic cannot block normal memory
- * database work. Left unencrypted even when memory shards use encryption —
- * it only stores ephemeral lock rows.
+ * Standalone coordination tables in the shared sqld database. They are
+ * deliberately separate from the memory tables: every statement here is short
+ * and autonomous, and no transaction is ever held across the LLM round trip,
+ * so lock traffic cannot block normal memory database work. It only stores
+ * ephemeral lock rows.
  */
 export const PROFILE_LEARNING_COORDINATION_DB = ".profile-learning-coordination.db";
 
 /** Single logical lock — the table only ever holds this one row. */
 const LOCK_NAME = "profile-learning";
-
-/** Bounded wait so a contended coordination DB cannot hang an idle handler. */
-const BUSY_TIMEOUT_MS = 5_000;
 
 interface ProcessIdentity {
   pid: number;
@@ -62,22 +57,14 @@ function coordinationDbPath(): string {
  * Opens the coordination database, guarantees the lock table exists, runs the
  * callback, and always closes the handle. One handle per operation; nothing is
  * cached across the LLM round trip.
+ *
+ * sqld does not support `PRAGMA busy_timeout` (it is a server, not a local
+ * file): contention is handled by withCoordinationDbRetry instead.
  */
 async function withCoordinationDb<T>(fn: (db: TursoDb) => Promise<T>): Promise<T> {
   const dbPath = coordinationDbPath();
+  const db = await tursoConnectionManager.getConnection(dbPath);
   try {
-    mkdirSync(dirname(dbPath), { recursive: true });
-  } catch {
-    // Already exists, or the statements below will fail loudly on their own.
-  }
-  // No at-rest encryption: lock rows are ephemeral and must stay openable even
-  // when memory-shard encryption is enabled or the key rotates.
-  const native = await connect(dbPath, {
-    experimental: tursoExperimentalFeatures(),
-  });
-  const db = new TursoDb(native);
-  try {
-    await db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     await db.run(`CREATE TABLE IF NOT EXISTS profile_learning_lock (
       name TEXT PRIMARY KEY,
       owner_token TEXT NOT NULL,
@@ -88,7 +75,7 @@ async function withCoordinationDb<T>(fn: (db: TursoDb) => Promise<T>): Promise<T
     )`);
     return await fn(db);
   } finally {
-    await db.close();
+    await tursoConnectionManager.closeConnection(dbPath);
   }
 }
 

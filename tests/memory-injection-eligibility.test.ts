@@ -71,10 +71,10 @@ describe("memory injection eligibility", () => {
     expect(result.unfiltered).toEqual(result.ordinaryList);
   });
 
-  it("filters each shard before limiting and merges only the current project", () => {
+  it("filters before limiting and merges only the current project", () => {
     expect(result.multishard).toEqual(["eligible-a", "eligible-c", "eligible-b"]);
     expect(result.readSizes.length).toBeGreaterThan(0);
-    expect(result.multishardReadSizes.length).toBe(2);
+    expect(result.multishardReadSizes.length).toBe(1);
     for (const count of [...result.readSizes, ...result.multishardReadSizes]) {
       expect(count).toBeLessThanOrEqual(3);
     }

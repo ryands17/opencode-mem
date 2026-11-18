@@ -6,6 +6,8 @@ import { spyOn } from "bun:test";
 const [scenario, home] = process.argv.slice(2);
 const vault = join(home!, "vault");
 const { CONFIG } = await import("../../src/config.js");
+const { resetSqldState } = await import("../turso-test-utils.js");
+await resetSqldState();
 Object.assign(CONFIG, {
   storagePath: join(home!, "storage"),
   markdownPath: vault,

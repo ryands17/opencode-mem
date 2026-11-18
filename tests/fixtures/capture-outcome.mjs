@@ -1,6 +1,7 @@
 import { mock } from "bun:test";
 import { Database } from "bun:sqlite";
 const src = process.env.SOURCE;
+const session = `s-${String(process.env.STORE).replace(/[^A-Za-z0-9]/g, "")}`;
 const { CONFIG } = await import(src + "config.js");
 Object.assign(CONFIG, {
   storagePath: process.env.STORE,
@@ -76,7 +77,7 @@ const { userPromptManager: mgr } = await import(
 );
 const { tursoConnectionManager } = await import(src + "services/turso/connection-manager.js");
 const { performAutoCapture } = await import(src + "services/auto-capture.js");
-const id = await mgr.savePrompt("s", "u", "/synthetic", "Fix auth and verify it");
+const id = await mgr.savePrompt(session, "u", "/synthetic", "Fix auth and verify it");
 const ctx = {
   client: {
     session: {
@@ -119,8 +120,8 @@ const ctx = {
     tui: { showToast: async () => ({}) },
   },
 };
-await performAutoCapture(ctx, "s", "/synthetic");
-await performAutoCapture(ctx, "s", "/synthetic");
+await performAutoCapture(ctx, session, "/synthetic");
+await performAutoCapture(ctx, session, "/synthetic");
 console.log(
   JSON.stringify({
     seen,

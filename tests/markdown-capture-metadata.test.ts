@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const source = (path: string) => JSON.stringify(new URL(`../src/${path}`, import.meta.url).href);
+const testUtilUrl = JSON.stringify(new URL("./turso-test-utils.js", import.meta.url).href);
 
 // Isolate real client/DB integration from the suite's process-wide module mocks.
 function scenario(body: string): void {
@@ -23,6 +24,8 @@ CONFIG.embeddingDimensions = 2;
 CONFIG.containerTagPrefix = "opencode";
 CONFIG.memoryBackend = "markdown";
 CONFIG.markdownPath = join(baseDir, "vault");
+const { resetSqldState } = await import(${testUtilUrl});
+await resetSqldState();
 const { embeddingService } = await import(${source("services/embedding.js")});
 embeddingService.warmup = async () => {};
 embeddingService.clearCache = () => {};
@@ -175,6 +178,7 @@ assert.deepEqual(current.metadata.customProvenance, { importedFrom: "synthetic" 
 const id = await addCapture();
 await closeTursoAndInvalidateCaches();
 CONFIG.storagePath = join(baseDir, "rebuilt-storage");
+await resetSqldState();
 memoryClient.reset();
 const result = await reconcileMarkdownVault();
 assert.equal(result.upserted, 1);
@@ -231,8 +235,8 @@ assert.notEqual(destinationShard.id, originalShard.id);
 assert.notEqual(destinationShard.dbPath, originalShard.dbPath);
 assert.equal(destinationShard.scope, "project");
 assert.equal(destinationShard.scopeHash, "1234567890abcdef");
-assert.equal(await tursoVectorSearch.getMemoryById(originalDb, id, { includeDeleted: true }), null);
-assert.equal(await tursoVectorSearch.countAllVectors(originalDb), 0);
+// All logical shards share one sqld database: the moved row stays queryable by
+// id, but its container tag and shard registry counts must follow the move.
 assert.equal((await tursoShardManager.getShardById(originalShard.id)).vectorCount, 0);
 const destinationDb = await tursoConnectionManager.getConnection(destinationShard.dbPath);
 const destinationRow = await tursoVectorSearch.getMemoryById(destinationDb, id);

@@ -1,0 +1,14 @@
+services:
+  sqld:
+    image: ghcr.io/tursodatabase/libsql-server:latest
+    container_name: opencode-mem-sqld
+    ports:
+      - "8080:8080"
+    environment:
+      SQLD_NODE: primary
+      SQLD_DB_PATH: iku.db
+    volumes:
+      - opencode-mem-sqld-data:/var/lib/sqld
+
+volumes:
+  opencode-mem-sqld-data:

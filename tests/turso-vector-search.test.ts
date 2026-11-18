@@ -2,12 +2,13 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { cleanupTursoTestDirectory } from "./turso-test-utils.js";
+import { cleanupTursoTestDirectory, resetSqldState } from "./turso-test-utils.js";
 
 describe("turso vector search", () => {
   let baseDir: string;
 
   afterEach(async () => {
+    await resetSqldState();
     await cleanupTursoTestDirectory(baseDir);
   });
 

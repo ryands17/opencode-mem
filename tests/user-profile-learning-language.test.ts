@@ -66,6 +66,8 @@ const prompts = promptTexts.map((content, i) => ({
 
 mock.module(${JSON.stringify(configUrl)}, () => ({
   CONFIG: {
+    storagePath: ${JSON.stringify(dir)},
+    sqldUrl: "http://127.0.0.1:8080",
     autoCaptureProviderStatus: { ready: true, mode: "opencode", issues: [] },
     userProfileAnalysisInterval: prompts.length,
     opencodeProvider: "test-provider",

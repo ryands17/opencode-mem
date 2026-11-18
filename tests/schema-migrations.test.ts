@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { connect } from "@tursodatabase/database";
+import { createClient } from "@libsql/client";
 import { cleanupTursoTestDirectory } from "./turso-test-utils.js";
 import {
   applySchemaMigrations,
@@ -21,8 +21,7 @@ describe("schema migrations", () => {
   it("applies user_version migrations idempotently", async () => {
     baseDir = mkdtempSync(join(tmpdir(), "schema-mig-"));
     const dbPath = join(baseDir, "user-prompts.db");
-    const native = await connect(dbPath);
-    const db = new TursoDb(native);
+    const db = new TursoDb(createClient({ url: `file:${dbPath}`, concurrency: 1 }));
 
     await applySchemaMigrations(db, USER_PROMPTS_MIGRATIONS.slice(0, 1), { dbPath, label: "v1" });
     await db.run(
@@ -35,6 +34,12 @@ describe("schema migrations", () => {
     });
     expect(version).toBe(2);
     await ensureUserPromptColumns(db);
+    const columns = (await db.all("PRAGMA table_info(user_prompts)")).map((column) =>
+      String(column.name)
+    );
+    expect(columns).toContain("capture_attempts");
+    expect(columns).toContain("provider_id");
+    expect(columns).toContain("model_id");
 
     const again = await applySchemaMigrations(db, USER_PROMPTS_MIGRATIONS, {
       dbPath,
@@ -42,8 +47,11 @@ describe("schema migrations", () => {
     });
     expect(again).toBe(2);
 
-    const row = await db.get<{ user_version?: number }>("PRAGMA user_version");
-    expect(Number(row?.user_version)).toBe(2);
+    const row = await db.get<{ version?: number }>(
+      "SELECT version FROM _opencode_mem_schema_versions WHERE label = ?",
+      ["test"]
+    );
+    expect(Number(row?.version)).toBe(2);
     expect((await db.get("SELECT content FROM user_prompts WHERE id = 'existing'"))?.content).toBe(
       "Existing request"
     );
@@ -56,8 +64,7 @@ describe("schema migrations", () => {
   it("migrates memory shards through session_id (v2) and deleted_at (v3)", async () => {
     baseDir = mkdtempSync(join(tmpdir(), "schema-mem-v3-"));
     const dbPath = join(baseDir, "shard.db");
-    const native = await connect(dbPath);
-    const db = new TursoDb(native);
+    const db = new TursoDb(createClient({ url: `file:${dbPath}`, concurrency: 1 }));
 
     const { memoryShardMigrations } = await import("../src/services/turso/schema-migrations.js");
     const migrations = memoryShardMigrations(8);

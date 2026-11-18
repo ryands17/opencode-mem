@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cleanupTursoTestDirectory } from "./turso-test-utils.js";
+import { cleanupTursoTestDirectory, resetSqldState } from "./turso-test-utils.js";
 
 describe("handleStats health data", () => {
   let baseDir: string | undefined;
@@ -25,6 +25,7 @@ describe("handleStats health data", () => {
 
     const { closeTursoAndInvalidateCaches } = await import("../src/services/turso/lifecycle.js");
     await closeTursoAndInvalidateCaches();
+    await resetSqldState();
 
     const { tursoShardManager } = await import("../src/services/turso/shard-manager.js");
     const { tursoConnectionManager } = await import("../src/services/turso/connection-manager.js");
@@ -106,7 +107,8 @@ describe("handleStats health data", () => {
       scope: "user",
       fileName: "user_aaaaaaaaaaaaaaaa_shard_0.db",
       fileExists: true,
-      registeredVectorCount: 2,
+      // Rows inserted directly through insertVector do not update the shard registry.
+      registeredVectorCount: 0,
       memoryCount: 2,
       oldestCreatedAt: new Date(firstCreatedAt).toISOString(),
       newestCreatedAt: new Date(newestCreatedAt).toISOString(),
@@ -115,7 +117,7 @@ describe("handleStats health data", () => {
     expect(projectStats).toMatchObject({
       scope: "project",
       fileExists: true,
-      registeredVectorCount: 1,
+      registeredVectorCount: 0,
       memoryCount: 1,
       oldestCreatedAt: new Date(newestCreatedAt).toISOString(),
       newestCreatedAt: new Date(newestCreatedAt).toISOString(),

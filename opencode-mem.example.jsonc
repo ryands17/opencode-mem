@@ -7,12 +7,17 @@
   // Project overrides: <project>/.opencode/opencode-mem.jsonc
   // On first startup the plugin also writes a starter config at the global path.
 
-  // Storage location for vector database (and search index when using markdown backend)
+  // Local storage for caches and Markdown vault indexes. Memories live in sqld.
   "storagePath": "~/.opencode-mem/data",
+
+  // libSQL server (sqld) holding memories. Defaults to a local Docker sqld instance.
+  // Set sqldAuthToken if the server requires authentication (env:// / file:// refs supported).
+  "sqldUrl": "http://127.0.0.1:8080",
+  // "sqldAuthToken": "env://SQLD_AUTH_TOKEN",
 
   // Memory persistence: "database" (default) or "markdown".
   // When "markdown", all .md files under markdownPath are the source of truth;
-  // Turso under storagePath is only a rebuildable semantic-search index.
+  // sqld is only a rebuildable semantic-search index.
   // "memoryBackend": "markdown",
   // "markdownPath": "~/Documents/LLM-Wiki",
 
@@ -20,45 +25,30 @@
   "userNameOverride": "",
 
   // ============================================
-  // Embedding Model (for similarity search)
+  // Embeddings (remote only — REQUIRED)
   // ============================================
-  // Local = Hugging Face / ONNX via @huggingface/transformers (not Apple MLX).
-  // Remote = set BOTH embeddingApiUrl and embeddingApiKey (OpenAI-compatible /embeddings).
+  // The local ONNX/transformers backend was removed. Set BOTH
+  // embeddingApiUrl and embeddingApiKey; the plugin does not work without them.
 
-  // Default: Nomic Embed v1 (768 dimensions, 8192 context, multilingual)
-  "embeddingModel": "Xenova/nomic-embed-text-v1",
+  // REQUIRED: OpenAI-compatible embeddings API (/embeddings with a Bearer token).
+  "embeddingApiUrl": "https://api.openai.com/v1",
+  "embeddingApiKey": "env://OPENAI_API_KEY", // or "sk-..." / "file:///path/to/key"
+
+  // Model served by your endpoint (used to look up vector dimensions).
+  "embeddingModel": "text-embedding-3-small", // 1536 dims; default: Xenova/nomic-embed-text-v1 (768)
+  // "embeddingModel": "nomic-embed-text-v1.5",  // 768 dims
 
   // Opt-in Nomic task prefixes (search_document: / search_query:). After enabling,
   // re-index existing memories so store and query vectors stay aligned.
   "embeddingUseTaskPrefixes": false,
 
-  // Local pooling: "mean" (default) | "cls" | "last_token".
-  // Unset → model preset (bge-m3=cls, Qwen3-Embedding=last_token) or "mean".
-  // "embeddingPooling": "mean",
-
   // Custom task prefixes (override presets / Nomic). Explicit "" disables a side.
-  // Changing pooling or prefixes requires re-embedding stored memories.
+  // Changing prefixes requires re-embedding stored memories.
   // "embeddingQueryPrefix": "query: ",
   // "embeddingDocumentPrefix": "passage: ",
 
-  // Optional local ONNX dtype override (e.g. "q8", "fp32"). When unset, transformers.js defaults apply.
-  // "embeddingDtype": "q8",
-
   // Auto-detected dimensions (no need to set manually)
   // "embeddingDimensions": 768,
-
-  // Other recommended local models:
-  // "embeddingModel": "Xenova/jina-embeddings-v2-base-en",  // 768 dims, English-only, 8192 context
-  // "embeddingModel": "Xenova/jina-embeddings-v2-small-en", // 512 dims, faster, 8192 context
-  // "embeddingModel": "Xenova/all-MiniLM-L6-v2",            // 384 dims, very fast, 512 context
-  // "embeddingModel": "Xenova/all-mpnet-base-v2",           // 768 dims, good quality, 512 context
-  // "embeddingModel": "Xenova/bge-m3",                      // 1024 dims, CLS pooling (auto)
-  // "embeddingModel": "intfloat/multilingual-e5-large",     // 1024 dims, query:/passage: prefixes (auto)
-
-  // Optional: OpenAI-compatible API for embeddings (both URL and key required)
-  // "embeddingApiUrl": "https://api.openai.com/v1",
-  // "embeddingApiKey": "env://OPENAI_API_KEY",  // or "sk-..." / "file:///path/to/key"
-  // "embeddingModel": "text-embedding-3-small",  // 1536 dims, auto-detected
 
   // ============================================
   // Web Server Settings
@@ -396,29 +386,12 @@
   // Show toast for error messages
   "showErrorToasts": true,
 
-  // Opt-in encryption at rest for local Turso DB shards (AES-256-GCM).
-  // When enabled without a key, the plugin creates
-  // ~/.config/opencode/opencode-mem-db.key (chmod 600) once.
-  "databaseEncryptionEnabled": false,
-  // Optional override: "databaseEncryptionKey": "env://OPENCODE_MEM_DB_KEY",
-  "databaseEncryptionCipher": "aes256gcm",
+  // Database encryption is handled by your sqld server (encrypted volume,
+  // network restrictions), not by the plugin. Use sqldAuthToken for auth.
 
   // Automatically update when installed as opencode-mem@latest (or a range).
   // Pinned versions like opencode-mem@2.26.0 are never auto-updated.
   "autoUpdate": true,
-
-  // Recover a store whose Turso WAL index is stale (a leftover -tshm/-shm, often
-  // beside a 0-byte -wal). The guard copies the main .db, verifies it with
-  // PRAGMA integrity_check, moves the -shm/-tshm index sidecars to
-  // <storagePath>/recovery/, and retries the open once. A non-empty -wal is
-  // never moved; only an absent or 0-byte -wal is removed. Concurrent sessions
-  // serialise healing through <storagePath>/recovery/<db>.lock.
-  "tursoAutoHeal": true,
-
-  // Turso experimental multiprocess_wal (Unix). Set false for single-owner mode:
-  // a second process then fails loudly with "database is locked" instead of
-  // writing into a divergent WAL. See issue #435.
-  "tursoMultiprocessWal": true,
 
   // ============================================
   // User Profile System
