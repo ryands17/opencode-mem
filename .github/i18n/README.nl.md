@@ -11,80 +11,83 @@
 
 Talen: [🇬🇧](../../README.md) | [🇩🇪](./README.de.md) | [🇨🇳](./README.zh.md) | [🇸🇦](./README.ar.md) | [🇹🇷](./README.tr.md) | **🇳🇱**
 
-Een persistent geheugensysteem voor AI-codingagents dat langetermijncontextbehoud over sessies mogelijk maakt met lokale vectordatabasetechnologie.
+Een persistent geheugensysteem voor AI-codingagents dat langetermijncontextbehoud over sessies mogelijk maakt met vectorzoekopdrachten ondersteund door een libSQL-server (sqld).
 
 ## Kernfuncties
 
-- **Lokale database:** ingebedde Turso/libSQL met native vectorzoekopdrachten, opgeslagen onder `storagePath`. Geen aparte vectordatabase.
+- **Database:** een libSQL-server (`sqld`) bevat de herinneringen met native vectorzoekopdrachten; geen aparte vectordatabase en geen native bindings.
 - **Intelligente promptgebaseerde geheugenextractie (auto-capture):** wanneer een sessie inactief wordt, zet een AI-verzoek op de achtergrond het technische werk om in persistente projectherinneringen.
 - **Automatisch ophalen:** relevante herinneringen en het gebruikersprofiel worden in de context van het model geïnjecteerd (`chatMessage`).
 - **Automatisch leren van gebruikersprofielen:** een projectoverstijgende samenvatting van je voorkeuren, patronen en workflows.
 - **Geheugenhygiëne:** slimme deduplicatie, optionele update-on-capture en optionele dreaming-consolidatie met herstelbare prullenbak.
 - **Multi-provider AI-ondersteuning:** elke provider die in OpenCode is geconfigureerd (`opencodeProvider` / `opencodeModel`), of een handmatige API: OpenAI Chat Completions, OpenAI Responses, Anthropic, MiniMax, OrcaRouter, Atlas Cloud, Cheaper Inference, API Route, Runcrate, CloudGPU.
-- **Embeddings:** 12+ lokale embeddingmodellen op de CPU (geen GPU nodig) of elke OpenAI-compatibele embeddings-API.
+- **Embeddings:** elke OpenAI-compatibele embeddings-API (vereist); geen lokale modeldownload en geen GPU nodig.
 - **Volledige web-UI:** uniforme memory–prompt timeline, gebruikersprofiel, skillbibliotheek, Markdown vault en gezondheidsstatistieken, met optionele HTTP Basic Auth.
-- **Ingebouwde privacybescherming:** `<private>`-tags, het verwijderen van inloggegevens vóór het vastleggen en optionele versleuteling in rust.
+- **Ingebouwde privacybescherming:** `<private>`-tags en het verwijderen van inloggegevens vóór het vastleggen.
 - **Overdraagbaarheid:** optionele Markdown vault-backend, en `export` / `import` / `migrate` van de `memory`-tool voor verplaatste of gekopieerde projecten.
 
 ## Vereisten
 
-Deze plugin gebruikt embedded Turso (`@tursodatabase/database`) met `F32_BLOB`-vectoren en exacte cosinuszoekopdrachten via `vector_distance_cos`. Er is geen aparte vectordatabase of aangepaste SQLite-build vereist.
+opencode-mem slaat herinneringen op in een **libSQL-server (`sqld`)** die via HTTP/WebSocket bereikbaar is met de pure-JS-transport `@libsql/client/web`. Het gebruikt `F32_BLOB`-vectoren en exacte cosinuszoekopdrachten via `vector_distance_cos`. Er zijn **geen native bindings of lokale ML-runtime**, dus de plugin draait overal waar Bun draait — inclusief Intel Macs (`darwin/x64`). Je hebt een draaiende sqld-server nodig (zie [Aan de slag](#aan-de-slag)) en een remote embedding-endpoint.
 
 **Aanbevolen runtime:**
 
 - Bun
 - Standaard OpenCode-pluginomgeving
-- Internettoegang bij eerste gebruik als je het standaard lokale embeddingmodel gebruikt, omdat het model wordt gedownload door `@huggingface/transformers`.
+- Docker (of een andere manier om een `sqld`-server te draaien) voor de geheugendatabase
+- Een remote OpenAI-compatibele embeddings-API en -sleutel (`embeddingApiUrl` + `embeddingApiKey`)
 - Voor bron-/ontwikkelingsinstallaties: voer `bun install` uit vóór het bouwen of testen. Het gepubliceerde pluginpakket installeert zijn runtime-afhankelijkheden automatisch via OpenCode.
 
-**CI-geteste platforms:** Linux, Windows en macOS 15 / macOS 26 op Apple Silicon (`darwin/arm64`). **Intel Mac (`darwin/x64`) wordt niet ondersteund** — `@tursodatabase/database` en vaste `onnxruntime-node`-releases leveren geen x64 native binding. Oudere macOS-releases zijn niet uitgesloten door die matrix; ze vallen simpelweg buiten de huidige set GitHub-hosted runners.
+**CI-geteste platforms:** Linux, Windows, macOS op Apple Silicon (`darwin/arm64`) en Intel (`darwin/x64`). sqld en remote embeddings hebben geen platformspecifieke native bindings.
 
 **Opmerkingen:**
 
-- Vector-embeddings worden direct in Turso opgeslagen en doorzocht; inserts slaan `F32_BLOB`-vectoren op voor exacte cosinusranking.
-- Vectorzoekopdrachten gebruiken exacte cosinusafstand via `vector_distance_cos` (geen DiskANN / approximatieve index), met optionele keyword-hybrid ranking wanneer een querystring wordt meegegeven (`@tursodatabase/database` levert geen FTS5).
+- Vector-embeddings worden direct in sqld opgeslagen en doorzocht; inserts slaan `F32_BLOB`-vectoren op voor exacte cosinusranking.
+- Vectorzoekopdrachten gebruiken exacte cosinusafstand via `vector_distance_cos` (geen DiskANN / approximatieve index), met optionele keyword-hybrid ranking wanneer een querystring wordt meegegeven.
 - Sessieopzoekingen gebruiken een geïndexeerde `session_id`-kolom (teruggevuld vanuit `metadata.sessionID` op schema v2).
 - Auto-capture en gebruikersprofiel-leren vereisen een AI-provider die structured/tool-call-output kan teruggeven. Memory search/add/list werken nog steeds zonder auto-capture-providerconfiguratie.
+- Alle herinneringen voor een installatie leven in één sqld-database, logisch gepartitioneerd per container-tag (project/gebruiker). `storagePath` bevat alleen lokale caches en Markdown vault-indexen.
 
 ### Hardware- / resourceverwachtingen
 
-opencode-mem vereist **geen** GPU. Lokale embeddings draaien op de CPU via `@huggingface/transformers` en ONNX (er is geen MLX-backend). Extra VRAM is niet nodig.
+opencode-mem vereist **geen** GPU of lokale ML-runtime — embeddings komen van je geconfigureerde remote API, er worden geen modellen gedownload of in het geheugen gehouden.
 
-| Workload                                                       | Typische extra resources                                                                                                                                                                                                                                                                               |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Lokale embeddings** (standaard `Xenova/nomic-embed-text-v1`) | Ongeveer **0,5–2 GB RAM** terwijl het model geladen is, afhankelijk van de Hugging Face-id die je kiest. Bij eerste gebruik wordt het model gedownload; de schijfcache staat onder `{storagePath}/.cache` (standaard `~/.opencode-mem/data/.cache`) en is vaak **honderden MB tot ~1–2 GB** per model. |
-| **Remote embeddings** (`embeddingApiUrl` + `embeddingApiKey`)  | Verwaarloosbare lokale ML-RAM — alleen plugin- + Turso-overhead.                                                                                                                                                                                                                                       |
-| **Database / plugin**                                          | Turso/libSQL op schijf onder `storagePath`. De grootte groeit met het aantal opgeslagen herinneringen, niet met GPU-geheugen.                                                                                                                                                                          |
+| Workload                                               | Typische extra resources                                                                                                        |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| **Embeddings** (`embeddingApiUrl` + `embeddingApiKey`) | Verwaarloosbare lokale RAM — alleen de plugin; het embeddingwerk vindt plaats bij de API.                                        |
+| **Database / plugin**                                  | Herinneringen leven in de sqld-server. Lokaal schijfgebruik onder `storagePath` beperkt zich tot caches en Markdown vault-indexen. |
 
-Bovenstaande platformbeperkingen blijven gelden (geen Intel Mac `darwin/x64`; gebruik Apple Silicon, Linux, Windows of een remote embedding-endpoint). Zie [Embeddings kiezen / configureren](#embeddings-kiezen--configureren).
+Zie [Embeddings kiezen / configureren](#embeddings-kiezen--configureren).
 
 ### Upgraden vanaf legacy SQLite-shards
 
-Bij opstarten herstelt de plugin onderbroken re-embed-swaps, zet libSQL DiskANN-indexen om naar de huidige Turso-engine, en verifieert of upgradeert daarna het legacy shard-schema. Engineconversie draait ook wanneer een store al een voltooide legacy-migratiemarker heeft, en behoudt opgeslagen vectoren zonder opnieuw te embedden. Elke geconverteerde database wordt geback-upt als `<database>.pre-tursodb-<timestamp>.bak`.
+Eerdere releases bewaarden elke memory-shard in een ingebed Turso-databasebestand onder `storagePath`. Die engine (en de `multiprocess_wal`, WAL-indexherstel, DiskANN-conversie en bestandsgebaseerde migratiemarkers) wordt niet langer gebruikt: herinneringen leven nu in één sqld-server en zijn gepartitioneerd per container-tag. Een nieuwere plugin starten tegen een oude installatie converteert die oude bestanden niet — start sqld, richt `sqldUrl` erop en importeer je herinneringen met de `export` / `import`-commands van de `memory`-tool als je ze wilt meenemen.
 
-Op macOS en Linux kunnen meerdere OpenCode-sessies hetzelfde `storagePath` delen via Turso’s experimentele `multiprocess_wal` (elk proces moet dezelfde modus gebruiken — herstart alle sessies na een upgrade). Op Windows weigert de engine die flag, dus slechts één OpenCode-sessie kan tegelijk de geheugendatabases bezitten.
-
-`tursoMultiprocessWal: false` opent in single-owner-modus: andere processen falen dan met `database is locked` in plaats van de store te delen. Dat is veiliger als niet-plugin-tools dezelfde bestanden aanraken, omdat een _schrijvend_ vreemd SQLite-proces de WAL-index van Turso stale maakt en de eigen volgende write stil verloren gaat. `tursoAutoHeal` (standaard `true`) verplaatst de index-sidecars `-shm`/`-tshm` van een store naar `storagePath/recovery/<db>-<timestamp>/` en probeert één keer opnieuw wanneer een open faalt door een stale WAL-index, na verificatie van een kopie van de hoofddatabase. Een niet-lege `-wal` wordt nooit verplaatst, zodat gecommitte maar nog niet gecheckpointte transacties overleven; alleen een ontbrekende of 0-byte `-wal` wordt verwijderd. Gelijktijdige sessies serialiseren healing via `storagePath/recovery/<db>.lock`.
-
-Bij de eerste start na een upgrade migreert opencode-mem bestaande memory-shard-databases automatisch naar het native Turso/libSQL-vectorformaat:
-
-- Elke shard wordt vóór herschrijven geback-upt als `<shard>.db.legacy.bak`
-- Voortgang wordt per shard bijgehouden in `<shard>.db.turso-migrate.json`
-- Een globale marker `.turso-migrated` wordt pas geschreven nadat alle shards succesvol zijn geverifieerd
-- Normale inserts en deletes maken een voltooide shard-migratie niet ongeldig; bij opstarten controleert de plugin nog steeds of vectoren leesbaar zijn en bij de opgeslagen dimensies passen
-- Draai geen meerdere OpenCode-instanties tegen hetzelfde `storagePath` tijdens migratie; een lockbestand (`.turso-migrate.lock`) voorkomt gelijktijdige migratie
-- Handmatige dimensiemigraties gebruiken `.turso-operation.lock`; andere pluginprocessen weigeren nieuwe memory-writes tot de migratie klaar is
-- Locks verlopen na 30 minuten zonder voortgangs-timestamp-update (of bestandswijzigingstijd als die timestamp ontbreekt), ook als het bezittende proces nog leeft. Deze lease gebruikt wandkloktijd: een voorwaartse kloksprong groter dan 30 minuten kan een lopende operatie vroeg laten verlopen; een achterwaartse stap of toekomstgedateerde lock kan een inerte lock verlengen. Locks dragen een unieke acquisition-id, en stale cleanup verwijdert alleen het precies geïnspecteerde bestand. Migraties sturen heartbeats en breken af als ze merken dat ownership verloren is. Stale-lock-cleanup wordt gelogd voor diagnose.
-
-Als migratie wordt onderbroken, hervat de volgende start automatisch vanuit de backup.
-
-Als een shard incompatibel wordt (bijvoorbeeld na wijziging van `embeddingDimensions`), worden writes geblokkeerd en blijft de originele database onaangeroerd. Gebruik de re-embed-migratie in de web-UI om een vervanging te bouwen en te verifiëren voordat deze wordt omgewisseld. De vorige shard blijft beschikbaar als `<shard>.db.pre-reembed-<pid>-<timestamp>.bak`.
+Als opgeslagen vectoren incompatibel worden met de geconfigureerde embeddings (bijvoorbeeld na wijziging van `embeddingDimensions`), worden writes naar die logische shard geblokkeerd. Gebruik de re-embed-migratie in de web-UI om een vervanging te bouwen en te verifiëren; de vorige shard wordt in sqld gearchiveerd vóór de omwisseling. `sqldUrl` naar een andere server of database richten geeft je ook een schone store zonder de oude aan te raken.
 
 ## Schemamigraties
 
-Lokale Turso-shards en huldatabases (`metadata.db`, `user-prompts.db`, `user-profiles.db`, `ai-sessions.db`) worden geüpgraded met geordende `PRAGMA user_version`-migraties in `src/services/turso/schema-migrations.ts`. Migraties zijn idempotent: bij starten van de plugin worden alleen openstaande versies toegepast.
+Geheugentabellen in sqld worden geüpgraded met geordende, per-label versiemigraties die worden bijgehouden in de tabel `_opencode_mem_schema_versions` (geïmplementeerd in `src/services/turso/schema-migrations.ts`). Hulgegevens (skills, gebruikersprompts, gebruikersprofielen, AI-sessies) gebruiken hetzelfde mechanisme met een eigen label. Migraties zijn idempotent: bij starten van de plugin worden alleen openstaande versies toegepast.
 
 ## Aan de slag
+
+### sqld instellen
+
+Herinneringen leven in een [libSQL-server (`sqld`)](https://github.com/tursodatabase/libsql). De snelste manier om er een te draaien is Docker met een named volume, zodat de data containerherstarts overleeft:
+
+```bash
+docker run -d --name opencode-mem-sqld \
+  -p 8080:8080 \
+  -v opencode-mem-sqld-data:/var/lib/sqld \
+  -e SQLD_NODE=primary \
+  ghcr.io/tursodatabase/libsql-server:latest
+```
+
+Als alternatief gebruik je [`scripts/sqld-compose.yml`](scripts/sqld-compose.yml): `docker compose -f scripts/sqld-compose.yml up -d`.
+
+Bevestig dat de server gezond is op `http://127.0.0.1:8080/health`. De plugin default naar `sqldUrl: "http://127.0.0.1:8080"`, dus deze lokale setup heeft geen configwijziging nodig. Voor een externe server stel je `sqldUrl` in en, als die authenticatie vereist, `sqldAuthToken` (accepteert `env://…` en `file://…`-referenties).
+
+Houd het named volume bij het upgraden of opnieuw aanmaken van de container — verwijderen wist alle herinneringen. Maak er een back-up van (of voer `memory export` uit) vóór elke destructieve operatie. Je hebt ook een remote embedding-endpoint nodig; zie [Embeddings kiezen / configureren](#embeddings-kiezen--configureren).
 
 Voor OpenCode v2 voeg je het pakket toe aan de native `plugins`-lijst:
 
@@ -141,15 +144,7 @@ Wijs naar de pakketroot, niet naar `dist/` of een enkel bestand. OpenCode lost e
 
 ### Optionele databaseversleuteling in rust
 
-Schakel AES-256-GCM-versleuteling in voor lokale Turso-shards in `~/.config/opencode/opencode-mem.jsonc`:
-
-```jsonc
-{
-  "databaseEncryptionEnabled": true,
-}
-```
-
-Bij de eerste start maakt de plugin `~/.config/opencode/opencode-mem-db.key` aan (32-byte hex-sleutel, `chmod 600`) en migreert bestaande plaintext-shards. Overschrijf met `"databaseEncryptionKey": "env://OPENCODE_MEM_DB_KEY"` of `"file://~/path/to.key"` als je de sleutel zelf beheert. Verlies van de sleutel betekent dat de versleutelde databases niet kunnen worden geopend. `databaseEncryptionCipher` selecteert de cipher: `aes256gcm` (standaard), `aes128gcm`, `aegis256`, `aegis256x2`, `aegis128l`, `aegis128x2` of `aegis128x4`.
+De plugin beheert databaseversleuteling niet langer zelf — de oude opties `databaseEncryptionEnabled`, `databaseEncryptionKey` en `databaseEncryptionCipher` zijn verwijderd. Herinneringen leven in je sqld-server, dus beveilig ze op die laag: draai sqld op een versleuteld volume, beperk netwerktoegang tot `sqldUrl` en stel `sqldAuthToken` in wanneer de server authenticatie vereist. De token accepteert `env://…` en `file://…`-referenties, zodat hij niet in platte tekst in het configbestand hoeft te staan.
 
 **Windows:** gebruik `%USERPROFILE%\.config\opencode\opencode.json` (bijvoorbeeld `C:\Users\<you>\.config\opencode\opencode.json`). Deze plugin leest **niet** `%APPDATA%` of `%LOCALAPPDATA%` voor zijn OpenCode-pluginentry — plaats het bestand onder `.config\opencode` in je gebruikersprofiel en herstart OpenCode. Als de plugin niet verschijnt, controleer dat pad en herstart opnieuw.
 
@@ -250,7 +245,9 @@ Vaak aangepaste opties op het hoogste niveau:
 
 | Optie                                                                 | Standaard                       | Wat het doet                                                                                                                          |
 | --------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `storagePath`                                                         | `"~/.opencode-mem/data"`        | Waar de geheugendatabases worden opgeslagen.                                                                                          |
+| `sqldUrl`                                                             | `"http://127.0.0.1:8080"`       | URL van de libSQL-server (`sqld`) die de herinneringen bevat.                                                                         |
+| `sqldAuthToken`                                                       | _(leeg)_                        | Auth-token voor sqld; accepteert `env://…` / `file://…`-referenties.                                                                  |
+| `storagePath`                                                         | `"~/.opencode-mem/data"`        | Lokale caches en Markdown vault-indexen; de herinneringen zelf leven in sqld.                                                         |
 | `webServerEnabled` / `webServerPort` / `webServerHost`                | `true` / `4747` / `"127.0.0.1"` | Schakelaar, poort en bindadres van de Web UI-server.                                                                                  |
 | `autoCaptureEnabled`                                                  | `true`                          | Vat inactieve sessies samen tot herinneringen (vereist een provider, zie [Auto-Capture AI Provider](#auto-capture-ai-provider)).      |
 | `similarityThreshold` / `maxMemories`                                 | `0.6` / `10`                    | Minimale gelijkenisscore en maximaal aantal resultaten bij het zoeken in herinneringen.                                               |
@@ -262,7 +259,7 @@ Vaak aangepaste opties op het hoogste niveau:
 
 ### Markdown-vault-backend (`memoryBackend`)
 
-Standaard leven herinneringen alleen in Turso onder `storagePath`. Optioneel kun je een **generieke Markdown-map** als bron van waarheid zetten (Obsidian-/Raneto-compatibele platte `.md`-bestanden — geen Obsidian-specifieke integratie):
+Standaard leven herinneringen alleen in sqld. Optioneel kun je een **generieke Markdown-map** als bron van waarheid zetten (Obsidian-/Raneto-compatibele platte `.md`-bestanden — geen Obsidian-specifieke integratie):
 
 ```jsonc
 {
@@ -273,13 +270,13 @@ Standaard leven herinneringen alleen in Turso onder `storagePath`. Optioneel kun
 
 | Sleutel         | Standaard    | Wat het doet                                                                                                                                       |
 | --------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `memoryBackend` | `"database"` | `"database"` houdt content in Turso. `"markdown"` gebruikt alle `.md`-bestanden onder `markdownPath` als bron van waarheid.                        |
+| `memoryBackend` | `"database"` | `"database"` houdt content in sqld. `"markdown"` gebruikt alle `.md`-bestanden onder `markdownPath` als bron van waarheid.                          |
 | `markdownPath`  | —            | Vereist wanneer `memoryBackend` `"markdown"` is. Absoluut of `~/…`-pad naar de vault-map. Geen aparte memory-submap — het pad _is_ de store.      |
 
 Wanneer Markdown-modus aan staat:
 
 - Door de plugin gemaakte herinneringen worden als `{id}.md` met YAML-frontmatter + body geschreven.
-- Bestaande notities in de map (elke Markdown-paginastijl) worden geïmporteerd/geïndexeerd; Turso is alleen een herbouwbare semantic-search-index.
+- Bestaande notities in de map (elke Markdown-paginastijl) worden geïmporteerd/geïndexeerd; sqld is alleen een herbouwbare semantic-search-index.
 - Bestandsadds/bewerkingen/verwijderingen worden bewaakt en opnieuw geïndexeerd; de web-UI toont alleen in deze modus een **Markdown**-sidebarpagina (status, bestandenlijst, reindex).
 - Overschakelen naar Markdown herbouwt de index vanuit de map. Rijen die alleen in de database staan en geen bijpassend bestand hebben, worden alleen verwijderd na een leesbare, volledige scan van een niet-lege vault. Exporteer eerst met `memory export` als je oude databaseherinneringen wilt bewaren.
 - Bij het synchroniseren wordt verwijdering overgeslagen en verschijnt een waarschuwing als de vault ontbreekt, onleesbaar is, slechts gedeeltelijk is gescand of verwerkt, of geen Markdown-bestanden bevat; bestaande geïndexeerde herinneringen blijven behouden. Herstel de vault of los het probleem op en indexeer daarna opnieuw. Wil je de geïndexeerde herinnering van het laatste bestand bewust verwijderen, verwijder die herinnering dan expliciet via de tool of web-UI.
@@ -360,38 +357,21 @@ opgeschoond.
 
 ### Embeddings kiezen / configureren
 
-Embeddings voeden similarity search voor herinneringen en het gebruikersprofiel. Configureer ze in hetzelfde bestand (`~/.config/opencode/opencode-mem.jsonc`). Er is **geen MLX-backend** — lokale embeddings gebruiken `@huggingface/transformers` met ONNX, niet Apple MLX.
+Embeddings voeden similarity search voor herinneringen en het gebruikersprofiel. Configureer ze in `~/.config/opencode/opencode-mem.jsonc`. **Remote embeddings zijn de enige backend** — het lokale ONNX/transformers-model is verwijderd omdat de native bindings niet voor elk platform beschikbaar zijn. Zowel `embeddingApiUrl` als `embeddingApiKey` zijn vereist: de plugin toont een opstartfout en weigert herinneringen op te slaan of te zoeken als een van beide ontbreekt.
 
-**Lokaal (standaard):** stel alleen `embeddingModel` in. Bij eerste gebruik wordt het model gedownload van Hugging Face en gecached onder `{storagePath}/.cache` (standaard `~/.opencode-mem/data/.cache`). De gewichten blijven geladen zolang het hostproces draait; stel `embeddingIdleTimeoutMs` in om ze na dat aantal inactieve milliseconden vrij te geven, waarna de volgende geheugenoperatie ze opnieuw opwarmt vanuit de lokale cache (ongeveer een seconde, geen nieuwe download).
+**Remote (OpenAI-compatibel):** de plugin roept `{embeddingApiUrl}/embeddings` aan met een Bearer-token. `embeddingApiKey` accepteert dezelfde geheime formaten als `memoryApiKey` (`literal`, `env://…`, `file://…`). Het endpoint moet vectoren met een consistente dimensie teruggeven; stel `embeddingDimensions` in als je endpoint die niet in een ingebouwd preset rapporteert.
 
-**Remote (OpenAI-compatibel):** stel zowel `embeddingApiUrl` als `embeddingApiKey` in. De plugin roept dan `{embeddingApiUrl}/embeddings` aan met een Bearer-token. `embeddingApiKey` accepteert dezelfde geheime formaten als `memoryApiKey` (`literal`, `env://…`, `file://…`).
+| Sleutel                    | Rol                                                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `embeddingApiUrl`          | **Vereist.** Basis-URL van een OpenAI-compatibele embeddings-API (geen trailing path voorbij `/v1`).                            |
+| `embeddingApiKey`          | **Vereist.** API-sleutel voor dat endpoint; accepteert `env://…` / `file://…`-referenties.                                       |
+| `embeddingModel`           | Modelnaam die je endpoint aanbiedt. Standaard: `Xenova/nomic-embed-text-v1` (ook gebruikt voor dimensieopzoeking).              |
+| `embeddingDimensions`      | Optionele override; meestal weglaten — dimensies worden opgezocht uit een ingebouwde map.                                       |
+| `embeddingQueryPrefix`     | Prefix voor query-task-embeddings. Unset → modelpreset of Nomic wanneer `embeddingUseTaskPrefixes` true is. Expliciete `""` schakelt uit. |
+| `embeddingDocumentPrefix`  | Prefix voor document-task-embeddings (zelfde resolutieregels als `embeddingQueryPrefix`).                                       |
+| `embeddingUseTaskPrefixes` | Opt-in Nomic `search_query:` / `search_document:`-prefixes wanneer custom/preset-prefixes unset zijn. Standaard `false`.         |
 
-| Sleutel                    | Rol                                                                                                                                                   |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `embeddingModel`           | Hugging Face-id (lokaal) of API-modelnaam (remote). Standaard: `Xenova/nomic-embed-text-v1`                                                           |
-| `embeddingDimensions`      | Optionele override; meestal weglaten — dimensies worden opgezocht uit een ingebouwde map                                                              |
-| `embeddingPooling`         | Lokale pooling: `"mean"` (standaard), `"cls"`, of `"last_token"`. Unset → klein known-model-preset of `"mean"`                                        |
-| `embeddingQueryPrefix`     | Prefix voor query-task-embeddings. Unset → modelpreset of Nomic wanneer `embeddingUseTaskPrefixes` true is. Expliciete `""` schakelt uit              |
-| `embeddingDocumentPrefix`  | Prefix voor document-task-embeddings (zelfde resolutieregels als `embeddingQueryPrefix`)                                                              |
-| `embeddingUseTaskPrefixes` | Opt-in Nomic `search_query:` / `search_document:`-prefixes wanneer custom/preset-prefixes unset zijn. Standaard `false`                               |
-| `embeddingDtype`           | Optionele lokale ONNX-dtype-override (bijv. `"q8"`, `"fp32"`). Indien gezet, doorgegeven aan transformers.js `pipeline({ dtype })`                    |
-| `embeddingIdleTimeoutMs`   | Geef het lokale model vrij na dit aantal inactieve milliseconden (bijv. `600000` voor 10 minuten). `0` (standaard) houdt het geladen zolang het proces draait |
-| `embeddingApiUrl`          | Basis-URL voor een OpenAI-compatibele embeddings-API (geen trailing path voorbij `/v1`)                                                               |
-| `embeddingApiKey`          | API-sleutel voor dat endpoint (vereist samen met `embeddingApiUrl`)                                                                                   |
-
-Aanbevolen lokale modellen:
-
-| Model                                | Dims | Opmerkingen                                      |
-| ------------------------------------ | ---- | ------------------------------------------------ |
-| `Xenova/nomic-embed-text-v1`         | 768  | Standaard; meertalig, 8192 context; mean pooling |
-| `Xenova/jina-embeddings-v2-base-en`  | 768  | Alleen Engels, 8192 context                      |
-| `Xenova/jina-embeddings-v2-small-en` | 512  | Sneller, 8192 context                            |
-| `Xenova/all-MiniLM-L6-v2`            | 384  | Zeer snel, 512 context                           |
-| `Xenova/all-mpnet-base-v2`           | 768  | Goede kwaliteit, 512 context                     |
-| `Xenova/bge-m3`                      | 1024 | Meertalig; auto CLS-pooling                      |
-| `intfloat/multilingual-e5-large`     | 1024 | Auto `query:` / `passage:`-prefixes              |
-
-Voorbeeld — remote OpenAI-embeddings:
+Voorbeeld — OpenAI:
 
 ```jsonc
 {
@@ -401,19 +381,17 @@ Voorbeeld — remote OpenAI-embeddings:
 }
 ```
 
-Voorbeeld — lokaal bge-m3 (pooling standaard CLS via preset; override indien nodig):
+Voorbeeld — een zelfgehost endpoint:
 
 ```jsonc
 {
-  "embeddingModel": "Xenova/bge-m3",
-  // "embeddingPooling": "cls",
-  // "embeddingDtype": "q8",
+  "embeddingApiUrl": "http://127.0.0.1:8765/v1",
+  "embeddingApiKey": "local-dev-key",
+  "embeddingModel": "nomic-embed-text-v1.5",
 }
 ```
 
-Wijzigen van `embeddingModel`, dimensies, pooling of task-prefixes kan opnieuw embedden van opgeslagen herinneringen vereisen zodat store- en queryvectoren uitgelijnd blijven. Kies liever één keer een model (en pooling-/prefixinstellingen) en blijf daarbij voor een gegeven datadirectory.
-
-**Niet ondersteund — Intel Mac (`darwin/x64`):** Lokale persistentie vereist `@tursodatabase/database`, dat geen Intel Mac native binding publiceert. Vaste `onnxruntime-node`-releases (`1.24.1+`, inclusief de vastgezette `1.31.1`) missen ook darwin/x64. Gebruik een Apple Silicon Mac, Linux of Windows, of een remote endpoint via `embeddingApiUrl` + `embeddingApiKey` (voorbeeld hierboven). Op ondersteunde platforms pinnet `opencode-mem` `onnxruntime-node@1.31.1` (Ort::Env teardown-fix uit `1.24.1` / #225) en laadt transformers via een CJS resolve-shim zodat geneste OpenCode-installaties die binding behouden. Transformers wordt naar een absoluut pad opgelost voordat die shim wordt geïnstalleerd, zodat OpenCode’s Bun `--compile`-host niet faalt met `Cannot find module '@huggingface/transformers' from ''`. Wis na een upgrade de geneste plugincache van OpenCode (`~/.cache/opencode/packages/opencode-mem@*`) en herinstalleer.
+Wijzigen van `embeddingModel`, dimensies of task-prefixes kan opnieuw embedden van opgeslagen herinneringen vereisen zodat store- en queryvectoren uitgelijnd blijven. Kies liever één keer een model (en prefixinstellingen) en blijf daarbij voor een gegeven sqld-database.
 
 ### Geheugenbereik
 
@@ -690,7 +668,8 @@ Probleemoplossing:
 - Voor modellen die geforceerde tool calls weigeren (`tool_choice: "required"`, bijv. sommige thinking-modi), voeg `"forceToolChoice": false` toe bij `openai-chat` / `orcarouter` / `atlas-cloud` / `cheaper-inference` / `api-route` / `runcrate` / `cloudgpu` / `standardcompute`.
 - Voor `opencodeProvider` / `opencodeModel` (bijv. DeepSeek V4 thinking) stuurt OpenCode nog steeds geforceerde `tool_choice` voor structured output. opencode-mem schakelt thinking uit op de interne `opencode-mem-structured`-agent (en past dat opnieuw toe in `chat.params` na variant-merge) zodat auto-capture en profiel-leren kunnen voltooien. Je interactieve chatagent blijft ongewijzigd. Als capture nog steeds faalt met een thinking/`tool_choice`-fout, kies een non-thinking model voor `opencodeModel` of configureer een complete handmatige fallback (`memoryModel` + `memoryApiUrl`).
 - **`opencode-claude-auth` / Claude Code:** auto-capture gebruikt OpenCode met je geauthenticeerde `anthropic`-provider. Geforceerde `format: json_schema` loopt vaak vast met Claude-auth, dus opencode-mem gebruikt een auth-behoudend **text-JSON**-pad voor `opencodeProvider: "anthropic"` (geen geforceerde `StructuredOutput`-tools; antwoord wordt met Zod geparsed). Een step-watchdog breekt runaway interne sessies nog steeds af na 2 stappen. Als capture nog steeds faalt, configureer een complete handmatige Anthropic API-key-fallback (`memoryProvider: "anthropic"` + `memoryModel` + `memoryApiUrl` + `memoryApiKey`) — Claude Pro/Max OAuth kan niet buiten OpenCode worden hergebruikt.
-- **Niet-ondersteunde platforms:** Intel Mac (`darwin/x64`) wordt niet ondersteund — `@tursodatabase/database` en vaste `onnxruntime-node`-releases (vastgezet `1.31.1`) leveren geen x64 native binding. Gebruik Apple Silicon, Linux of Windows, of een remote embedding-endpoint via `embeddingApiUrl` + `embeddingApiKey`. MLX wordt niet ondersteund.
+- **Databaseverbindingsfouten:** bevestig dat sqld draait en dat `sqldUrl` ernaartoe wijst (`http://127.0.0.1:8080` standaard), en stel `sqldAuthToken` in als de server authenticatie vereist.
+- **Fout "Remote embeddings are required":** stel zowel `embeddingApiUrl` als `embeddingApiKey` in; er is geen lokale embedding-backend.
 
 ## Publieke subpath-exports
 
@@ -733,10 +712,10 @@ Lokaal bouwen en testen:
 bun install
 bun run build
 bun test
-bun run check
+bun run quality
 ```
 
-`bun run check` voert `format:check`, `lint` en `typecheck` uit; `bun run format` herschrijft de opmaak.
+`bun run quality` voert `format:check`, `lint` en `typecheck` uit; `bun run format` herschrijft de opmaak.
 
 De [docs](https://opencode-mem.zhafron.my.id/docs/) worden gegenereerd uit deze README en de vertalingen onder `.github/i18n/`; de [landingspagina](https://opencode-mem.zhafron.my.id) staat in `github-site/src/`. Elke README-kop moet in `github-site/docs-map.json` aan een docs-pagina zijn gekoppeld, anders mislukt de site-build. Bouw de site lokaal met `cd github-site && bun install && bun run build`.
 

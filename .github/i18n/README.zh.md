@@ -11,80 +11,83 @@
 
 语言: [🇬🇧](../../README.md) | [🇩🇪](./README.de.md) | **🇨🇳** | [🇸🇦](./README.ar.md) | [🇹🇷](./README.tr.md) | [🇳🇱](./README.nl.md)
 
-面向 AI 编程代理的持久记忆系统，基于本地向量数据库技术，实现跨会话的长期上下文保留。
+面向 AI 编程代理的持久记忆系统，通过由 libSQL 服务器（sqld）提供支持的向量搜索，实现跨会话的长期上下文保留。
 
 ## 核心功能
 
-- **本地数据库：** 内嵌 Turso/libSQL 与原生向量搜索，存储于 `storagePath` 下。无需单独的向量数据库。
+- **数据库：** libSQL 服务器（`sqld`）持有记忆并提供原生向量搜索；无需单独的向量数据库，也无需原生绑定。
 - **基于提示的智能记忆提取 (auto-capture)：** 当会话进入空闲状态时，后台 AI 请求会将技术工作转化为持久化项目记忆。
 - **自动召回：** 相关记忆和用户画像会被注入到模型上下文中（`chatMessage`）。
 - **自动用户画像学习：** 跨项目汇总你的偏好、模式和工作流程。
 - **记忆整理：** 智能去重、可选的 update-on-capture，以及可选的 dreaming 整合，并配有可恢复的回收站。
 - **多提供商 AI 支持：** 可使用 OpenCode 中配置的任意提供商（`opencodeProvider` / `opencodeModel`），或手动配置 API：OpenAI Chat Completions、OpenAI Responses、Anthropic、MiniMax、OrcaRouter、Atlas Cloud、Cheaper Inference、API Route、Runcrate、CloudGPU。
-- **嵌入：** 12+ 本地嵌入模型，在 CPU 上运行（无需 GPU），或使用任意 OpenAI 兼容的嵌入 API。
+- **嵌入：** 任意 OpenAI 兼容的嵌入 API（必需）；无需下载本地模型，也无需 GPU。
 - **功能完整的 Web UI：** 统一的 memory–prompt timeline、用户画像、技能库、Markdown vault 和健康统计，并支持可选的 HTTP Basic Auth。
-- **内置隐私保护：** `<private>` 标签、捕获前凭据脱敏，以及可选的静态加密。
+- **内置隐私保护：** `<private>` 标签与捕获前的凭据脱敏。
 - **可移植性：** 可选的 Markdown vault 后端，以及 `memory` 工具的 `export` / `import` / `migrate`，适用于移动或复制的项目。
 
 ## 前置要求
 
-本插件使用嵌入式 Turso（`@tursodatabase/database`），配合 `F32_BLOB` 向量与通过 `vector_distance_cos` 的精确余弦搜索。无需单独的向量数据库或自定义 SQLite 构建。
+opencode-mem 将记忆存储在**libSQL 服务器（`sqld`）**中，通过纯 JS 的 `@libsql/client/web` 传输层以 HTTP/WebSocket 访问。它使用 `F32_BLOB` 向量，并通过 `vector_distance_cos` 进行精确余弦搜索。**没有原生绑定或本地 ML 运行时**，因此插件可在 Bun 运行的任何地方运行 — 包括 Intel Mac（`darwin/x64`）。你需要一个正在运行的 sqld 服务器（参见[快速开始](#快速开始)）和一个远程嵌入端点。
 
 **推荐运行时：**
 
 - Bun
 - 标准 OpenCode 插件环境
-- 若使用默认本地嵌入模型，首次使用时需要联网，因为模型由 `@huggingface/transformers` 下载。
+- Docker（或其他运行 `sqld` 服务器的方式），用于记忆数据库
+- 远程 OpenAI 兼容嵌入 API 及密钥（`embeddingApiUrl` + `embeddingApiKey`）
 - 对于源码/开发安装，请在构建或测试前运行 `bun install`。已发布的插件包会通过 OpenCode 自动安装其运行时依赖。
 
-**CI 已测试平台：** Linux、Windows，以及 Apple Silicon 上的 macOS 15 / macOS 26（`darwin/arm64`）。**不支持 Intel Mac（`darwin/x64`）** — `@tursodatabase/database` 与固定版本的 `onnxruntime-node` 发行版均不提供 x64 原生绑定。更旧的 macOS 版本并未被该矩阵排除；它们只是不在当前 GitHub 托管的 runner 集合内。
+**CI 已测试平台：** Linux、Windows，以及 Apple Silicon（`darwin/arm64`）与 Intel（`darwin/x64`）上的 macOS。sqld 与远程嵌入没有特定于平台的原生绑定。
 
 **说明：**
 
-- 向量嵌入直接存储并在 Turso 中搜索；插入时以 `F32_BLOB` 向量存储，用于精确余弦排序。
-- 向量搜索通过 `vector_distance_cos` 使用精确余弦距离（无 DiskANN / 近似索引）；在提供查询字符串时可选用关键词混合排序（`@tursodatabase/database` 不附带 FTS5）。
+- 向量嵌入直接存储并在 sqld 中搜索；插入时以 `F32_BLOB` 向量存储，用于精确余弦排序。
+- 向量搜索通过 `vector_distance_cos` 使用精确余弦距离（无 DiskANN / 近似索引），在提供查询字符串时可选用关键词混合排序。
 - 会话查找使用已索引的 `session_id` 列（在 schema v2 上从 `metadata.sessionID` 回填）。
 - 自动捕获与用户画像学习需要能返回结构化/工具调用输出的 AI 提供商。即使未配置自动捕获提供商，记忆的搜索/添加/列表仍可正常工作。
+- 一次安装的所有记忆都存放在一个 sqld 数据库中，按容器标签（项目/用户）进行逻辑分区。`storagePath` 仅保存本地缓存与 Markdown vault 索引。
 
 ### 硬件 / 资源预期
 
-opencode-mem **不**需要 GPU。本地嵌入通过 `@huggingface/transformers` 与 ONNX 在 CPU 上运行（没有 MLX 后端）。不需要额外的 VRAM。
+opencode-mem **不**需要 GPU 或本地 ML 运行时 — 嵌入来自你配置的远程 API，因此不会下载或驻留任何模型。
 
-| 工作负载                                              | 典型额外资源                                                                                                                                                                                       |
-| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **本地嵌入**（默认 `Xenova/nomic-embed-text-v1`）     | 模型加载期间约 **0.5–2 GB RAM**，取决于所选 Hugging Face id。首次使用会下载模型；磁盘缓存在 `{storagePath}/.cache`（默认 `~/.opencode-mem/data/.cache`），每个模型通常为 **数百 MB 至约 1–2 GB**。 |
-| **远程嵌入**（`embeddingApiUrl` + `embeddingApiKey`） | 本地 ML RAM 可忽略不计 — 仅有插件 + Turso 开销。                                                                                                                                                   |
-| **数据库 / 插件**                                     | Turso/libSQL 存储在 `storagePath` 下的磁盘上。体积随存储的记忆数量增长，与 GPU 内存无关。                                                                                                          |
+| 工作负载                                            | 典型额外资源                                                                            |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| **嵌入**（`embeddingApiUrl` + `embeddingApiKey`）   | 本地 RAM 占用可忽略不计 — 仅插件本身；嵌入工作在 API 端完成。                          |
+| **数据库 / 插件**                                   | 记忆存放在 sqld 服务器中。`storagePath` 下的本地磁盘占用仅限缓存与 Markdown vault 索引。 |
 
-上述平台限制仍适用（不支持 Intel Mac `darwin/x64`；请使用 Apple Silicon、Linux、Windows，或远程嵌入端点）。参见[选择 / 配置嵌入模型](#选择--配置嵌入模型)。
+参见[选择 / 配置嵌入模型](#选择--配置嵌入模型)。
 
 ### 从旧版 SQLite 分片升级
 
-启动时会恢复中断的重新嵌入交换、将 libSQL DiskANN 索引转换为当前 Turso 引擎，然后验证或升级旧版分片 schema。即使存储已有完成的旧版迁移标记，引擎转换仍会运行，并在不重新嵌入的情况下保留已存储向量。每个转换后的数据库会备份为 `<database>.pre-tursodb-<timestamp>.bak`。
+早期版本将每个记忆分片保存在 `storagePath` 下的嵌入式 Turso 数据库文件中。该引擎（及其 `multiprocess_wal`、WAL 索引恢复、DiskANN 转换与基于文件的迁移标记）已不再使用：记忆现在存放在单个 sqld 服务器中，并按容器标签分区。用较新插件启动旧安装不会转换这些旧文件 — 请启动 sqld，将 `sqldUrl` 指向它，并在需要迁移记忆时使用 `memory` 工具的 `export` / `import` 命令导入记忆。
 
-在 macOS 与 Linux 上，多个 OpenCode 会话可通过 Turso 的实验性 `multiprocess_wal` 共享同一 `storagePath`（每个进程必须使用相同模式 — 升级后请重启所有会话）。在 Windows 上引擎会拒绝该标志，因此同一时间只能有一个 OpenCode 会话拥有记忆数据库。
-
-`tursoMultiprocessWal: false` 改为单所有者模式打开：其他进程会以 `database is locked` 失败，而不是共享存储。若非插件工具会触碰相同文件，这更安全——因为_正在写入_的外部 SQLite 进程会使 Turso 的 WAL 索引过期，随后本进程的下一次写入会静默丢失。`tursoAutoHeal`（默认 `true`）在因过期 WAL 索引导致打开失败时，会在验证主数据库副本后，将存储的 `-shm`/`-tshm` 索引旁路文件移到 `storagePath/recovery/<db>-<timestamp>/` 并重试一次。非空 `-wal` 永不移动，因此已提交但未检查点的事务得以保留；仅删除缺失或 0 字节的 `-wal`。并发会话通过 `storagePath/recovery/<db>.lock` 串行化修复。
-
-升级后首次启动时，opencode-mem 会自动将现有记忆分片数据库迁移为原生 Turso/libSQL 向量格式：
-
-- 每个分片在重写前备份为 `<shard>.db.legacy.bak`
-- 进度按分片记录在 `<shard>.db.turso-migrate.json`
-- 仅在所有分片验证成功后才写入全局标记 `.turso-migrated`
-- 普通插入与删除不会使已完成的分片迁移失效；启动时仍会检查向量可读且与已存维度匹配
-- 迁移期间请勿对同一 `storagePath` 运行多个 OpenCode 实例；锁文件（`.turso-migrate.lock`）可防止并发迁移
-- 手动维度迁移使用 `.turso-operation.lock`；在迁移完成前，其他插件进程会拒绝新的记忆写入
-- 若 30 分钟内没有进度时间戳更新（若无时间戳则看文件修改时间），锁会过期，即使持有进程仍在运行。该租约使用挂钟时间：向前拨钟超过 30 分钟可能使进行中的操作过早过期；向后拨钟或未来日期的锁可能延长空闲锁寿命。锁带有唯一获取 id，过期清理只删除其检查过的那个文件。迁移过程会发送心跳，一旦发现所有权丢失即中止。过期锁清理会写入日志以便诊断。
-
-若迁移被中断，下次启动会自动从备份恢复。
-
-若分片变得不兼容（例如更改 `embeddingDimensions` 之后），写入会被阻止，且原始数据库保持不变。请使用 Web UI 的重新嵌入迁移来构建并验证替换项，然后再交换到位。先前的分片仍可作为 `<shard>.db.pre-reembed-<pid>-<timestamp>.bak` 使用。
+若存储的向量与配置的嵌入不兼容（例如更改 `embeddingDimensions` 之后），对该逻辑分片的写入会被阻止。请使用 Web UI 的重新嵌入迁移来重建并验证替换项；交换之前，先前的分片会在 sqld 中归档。将 `sqldUrl` 指向另一台服务器或数据库也能获得一个干净的存储，且不会影响旧存储。
 
 ## Schema 迁移
 
-本地 Turso 分片与辅助数据库（`metadata.db`、`user-prompts.db`、`user-profiles.db`、`ai-sessions.db`）通过 `src/services/turso/schema-migrations.ts` 中按序的 `PRAGMA user_version` 迁移进行升级。迁移是幂等的：启动插件时仅应用待处理的版本。
+sqld 中的记忆表通过 `_opencode_mem_schema_versions` 表中记录的、按序的按标签版本迁移进行升级（实现于 `src/services/turso/schema-migrations.ts`）。辅助数据（skills、用户提示、用户画像、AI 会话）使用相同机制，但带有各自的标签。迁移是幂等的：启动插件时仅应用待处理的版本。
 
 ## 快速开始
+
+### 设置 sqld
+
+记忆存放在 [libSQL 服务器（`sqld`）](https://github.com/tursodatabase/libsql)中。运行该服务器最快的方式是使用 Docker，并配合命名卷，使数据在容器重启后得以保留：
+
+```bash
+docker run -d --name opencode-mem-sqld \
+  -p 8080:8080 \
+  -v opencode-mem-sqld-data:/var/lib/sqld \
+  -e SQLD_NODE=primary \
+  ghcr.io/tursodatabase/libsql-server:latest
+```
+
+也可使用 [`scripts/sqld-compose.yml`](../../scripts/sqld-compose.yml)：`docker compose -f scripts/sqld-compose.yml up -d`。
+
+请在 `http://127.0.0.1:8080/health` 确认服务器运行正常。插件默认使用 `sqldUrl: "http://127.0.0.1:8080"`，因此此本地设置无需更改配置。对于远程服务器，请设置 `sqldUrl`，并在服务器需要认证时设置 `sqldAuthToken`（接受 `env://…` 与 `file://…` 引用）。
+
+升级或重建容器时请保留命名卷 — 删除它会删除所有记忆。在执行任何破坏性操作前，请备份（或运行 `memory export`）。你还需要一个远程嵌入端点；参见[选择 / 配置嵌入模型](#选择--配置嵌入模型)。
 
 对于 OpenCode v2，将包添加到原生 `plugins` 列表：
 
@@ -141,15 +144,7 @@ v2 插件通过模型的系统上下文提供自动记忆上下文。
 
 ### 可选的静态数据库加密
 
-在 `~/.config/opencode/opencode-mem.jsonc` 中为本地 Turso 分片启用 AES-256-GCM 加密：
-
-```jsonc
-{
-  "databaseEncryptionEnabled": true,
-}
-```
-
-首次启动时，插件会创建 `~/.config/opencode/opencode-mem-db.key`（32 字节十六进制密钥，`chmod 600`）并迁移现有明文分片。若你自行管理密钥，可用 `"databaseEncryptionKey": "env://OPENCODE_MEM_DB_KEY"` 或 `"file://~/path/to.key"` 覆盖。丢失密钥意味着无法打开已加密的数据库。`databaseEncryptionCipher` 用于选择加密算法：`aes256gcm`（默认）、`aes128gcm`、`aegis256`、`aegis256x2`、`aegis128l`、`aegis128x2` 或 `aegis128x4`。
+插件不再自行管理数据库加密 — 旧的 `databaseEncryptionEnabled`、`databaseEncryptionKey` 与 `databaseEncryptionCipher` 选项已被移除。记忆存放在你的 sqld 服务器中，因此请在该层加以保护：在加密卷上运行 sqld，限制对 `sqldUrl` 的网络访问，并在服务器需要认证时设置 `sqldAuthToken`。该令牌接受 `env://…` 与 `file://…` 引用，因此无需以明文形式写在配置文件中。
 
 **Windows：** 使用 `%USERPROFILE%\.config\opencode\opencode.json`（例如 `C:\Users\<you>\.config\opencode\opencode.json`）。本插件**不会**从 `%APPDATA%` 或 `%LOCALAPPDATA%` 读取其 OpenCode 插件条目 — 请将文件放在用户配置文件下的 `.config\opencode`，然后重启 OpenCode。若插件未出现，请确认该路径并再次重启。
 
@@ -250,7 +245,9 @@ memory({ mode: "import", inputPath: "./memories.json" });
 
 | 选项                                                                  | 默认值                          | 作用                                                                                                   |
 | --------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `storagePath`                                                         | `"~/.opencode-mem/data"`        | 记忆数据库的存放位置。                                                                                 |
+| `sqldUrl`                                                             | `"http://127.0.0.1:8080"`       | 保存记忆的 libSQL 服务器（`sqld`）的 URL。                                                              |
+| `sqldAuthToken`                                                       | _(空)_                          | sqld 的认证令牌；接受 `env://…` / `file://…` 引用。                                                     |
+| `storagePath`                                                         | `"~/.opencode-mem/data"`        | 本地缓存与 Markdown vault 索引；记忆本身存放在 sqld 中。                                              |
 | `webServerEnabled` / `webServerPort` / `webServerHost`                | `true` / `4747` / `"127.0.0.1"` | Web UI 服务器开关、端口与绑定地址。                                                                    |
 | `autoCaptureEnabled`                                                  | `true`                          | 将空闲会话总结为记忆（需要配置提供方，参见 [Auto-Capture AI Provider](#自动捕获-ai-提供商)）。 |
 | `similarityThreshold` / `maxMemories`                                 | `0.6` / `10`                    | 记忆搜索的最低相似度分数与最大结果数量。                                                               |
@@ -262,7 +259,7 @@ memory({ mode: "import", inputPath: "./memories.json" });
 
 ### Markdown vault 后端（`memoryBackend`）
 
-默认情况下，记忆仅存放在 `storagePath` 下的 Turso 中。也可选将**通用 Markdown 文件夹**设为事实来源（兼容 Obsidian/Raneto 的纯 `.md` 文件 — 并非 Obsidian 专用集成）：
+默认情况下，记忆仅存放在 sqld 中。也可选将**通用 Markdown 文件夹**设为事实来源（兼容 Obsidian/Raneto 的纯 `.md` 文件 — 并非 Obsidian 专用集成）：
 
 ```jsonc
 {
@@ -273,13 +270,13 @@ memory({ mode: "import", inputPath: "./memories.json" });
 
 | 键              | 默认         | 作用                                                                                                                       |
 | --------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `memoryBackend` | `"database"` | `"database"` 将内容保存在 Turso。`"markdown"` 将 `markdownPath` 下所有 `.md` 文件作为事实来源。                            |
+| `memoryBackend` | `"database"` | `"database"` 将内容保存在 sqld。`"markdown"` 将 `markdownPath` 下所有 `.md` 文件作为事实来源。                             |
 | `markdownPath`  | —            | `memoryBackend` 为 `"markdown"` 时必填。vault 文件夹的绝对路径或 `~/…`。没有单独的记忆子文件夹 — 该路径_就是_存储本身。 |
 
 启用 Markdown 模式时：
 
 - 插件创建的记忆以 `{id}.md` 写入，含 YAML frontmatter + 正文。
-- 文件夹中已有笔记（任意 Markdown 页面风格）会被导入/索引；Turso 仅作为可重建的语义搜索索引。
+- 文件夹中已有笔记（任意 Markdown 页面风格）会被导入/索引；sqld 仅作为可重建的语义搜索索引。
 - 监视文件新增/编辑/删除并重新索引；Web UI 仅在此模式下显示 **Markdown** 侧边栏页（状态、文件列表、重新索引）。
 - 切换到 Markdown 会从文件夹重建索引。只有在对可读取、非空的 vault 完成完整扫描后，才会删除没有对应文件的纯数据库记录。如需保留旧数据库记忆，请先用 `memory export` 导出。
 - 如果 vault 缺失、不可读取、仅完成部分扫描或处理，或不包含任何 Markdown 文件，对账会跳过删除并发出警告，保留已有的索引记忆。恢复或修复 vault 后，请重新索引。如果确实要移除最后一个文件对应的索引记忆，请通过工具或 Web UI 明确删除该记忆。
@@ -333,38 +330,21 @@ memory({ mode: "import", inputPath: "./memories.json" });
 
 ### 选择 / 配置嵌入模型
 
-嵌入为记忆与用户画像提供相似性搜索能力。在同一文件中配置（`~/.config/opencode/opencode-mem.jsonc`）。**没有 MLX 后端** — 本地嵌入使用带 ONNX 的 `@huggingface/transformers`，而非 Apple MLX。
+嵌入为记忆与用户画像提供相似性搜索能力。在 `~/.config/opencode/opencode-mem.jsonc` 中配置。**远程嵌入是唯一的后端** — 本地 ONNX/transformers 模型已被移除，因为其原生绑定并非适用于所有平台。`embeddingApiUrl` 与 `embeddingApiKey` 均为必需：若缺少任一项，插件会在启动时显示错误并拒绝存储或搜索记忆。
 
-**本地（默认）：** 仅设置 `embeddingModel`。首次使用时模型从 Hugging Face 下载并缓存在 `{storagePath}/.cache`（默认 `~/.opencode-mem/data/.cache`）下。模型权重会在宿主进程的整个生命周期内常驻内存；设置 `embeddingIdleTimeoutMs` 可在空闲达到该毫秒数后释放它们，下一次记忆操作会从本地缓存重新预热（约一秒，而非重新下载）。
+**远程（OpenAI 兼容）：** 插件使用 Bearer 令牌调用 `{embeddingApiUrl}/embeddings`。`embeddingApiKey` 接受与 `memoryApiKey` 相同的密钥格式（`literal`、`env://…`、`file://…`）。端点必须返回维度一致的向量；若你的端点无法在内置预设中报告维度，请设置 `embeddingDimensions`。
 
-**远程（OpenAI 兼容）：** 同时设置 `embeddingApiUrl` 与 `embeddingApiKey`。插件随后使用 Bearer 令牌调用 `{embeddingApiUrl}/embeddings`。`embeddingApiKey` 接受与 `memoryApiKey` 相同的密钥格式（`literal`、`env://…`、`file://…`）。
+| 键                         | 作用                                                                                                      |
+| -------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `embeddingApiUrl`          | **必需。** OpenAI 兼容嵌入 API 的基础 URL（末尾路径不超过 `/v1`）。                                       |
+| `embeddingApiKey`          | **必需。** 该端点的 API 密钥；接受 `env://…` / `file://…` 引用。                                          |
+| `embeddingModel`           | 你的端点提供的模型名。默认：`Xenova/nomic-embed-text-v1`（也用于维度查找）。                              |
+| `embeddingDimensions`      | 可选覆盖；通常省略 — 维度从内置映射查找。                                                                 |
+| `embeddingQueryPrefix`     | 查询任务嵌入的前缀。未设置 → 模型预设，或在 `embeddingUseTaskPrefixes` 为 true 时使用 Nomic。显式 `""` 禁用。 |
+| `embeddingDocumentPrefix`  | 文档任务嵌入的前缀（与 `embeddingQueryPrefix` 相同的解析规则）。                                          |
+| `embeddingUseTaskPrefixes` | 当自定义/预设前缀未设置时，可选启用 Nomic 的 `search_query:` / `search_document:` 前缀。默认 `false`。     |
 
-| 键                         | 作用                                                                                                        |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `embeddingModel`           | Hugging Face id（本地）或 API 模型名（远程）。默认：`Xenova/nomic-embed-text-v1`                            |
-| `embeddingDimensions`      | 可选覆盖；通常可省略 — 维度从内置映射查找                                                                   |
-| `embeddingPooling`         | 本地池化：`"mean"`（默认）、`"cls"` 或 `"last_token"`。未设置 → 小型已知模型预设或 `"mean"`                 |
-| `embeddingQueryPrefix`     | 查询任务嵌入的前缀。未设置 → 模型预设，或在 `embeddingUseTaskPrefixes` 为 true 时使用 Nomic。显式 `""` 禁用 |
-| `embeddingDocumentPrefix`  | 文档任务嵌入的前缀（与 `embeddingQueryPrefix` 相同的解析规则）                                              |
-| `embeddingUseTaskPrefixes` | 当自定义/预设前缀未设置时，可选启用 Nomic 的 `search_query:` / `search_document:` 前缀。默认 `false`        |
-| `embeddingDtype`           | 可选的本地 ONNX dtype 覆盖（例如 `"q8"`、`"fp32"`）。设置后会传给 transformers.js 的 `pipeline({ dtype })`  |
-| `embeddingIdleTimeoutMs`   | 空闲达到该毫秒数后释放本地模型（例如 `600000` 表示 10 分钟）。`0`（默认）在进程生命周期内保持加载          |
-| `embeddingApiUrl`          | OpenAI 兼容嵌入 API 的基础 URL（末尾路径不超过 `/v1`）                                                      |
-| `embeddingApiKey`          | 该端点的 API 密钥（需与 `embeddingApiUrl` 一起设置）                                                        |
-
-推荐的本地模型：
-
-| 模型                                 | 维度 | 说明                                 |
-| ------------------------------------ | ---- | ------------------------------------ |
-| `Xenova/nomic-embed-text-v1`         | 768  | 默认；多语言，8192 上下文；mean 池化 |
-| `Xenova/jina-embeddings-v2-base-en`  | 768  | 仅英语，8192 上下文                  |
-| `Xenova/jina-embeddings-v2-small-en` | 512  | 更快，8192 上下文                    |
-| `Xenova/all-MiniLM-L6-v2`            | 384  | 非常快，512 上下文                   |
-| `Xenova/all-mpnet-base-v2`           | 768  | 质量较好，512 上下文                 |
-| `Xenova/bge-m3`                      | 1024 | 多语言；自动 CLS 池化                |
-| `intfloat/multilingual-e5-large`     | 1024 | 自动 `query:` / `passage:` 前缀      |
-
-示例 — 远程 OpenAI 嵌入：
+示例 — OpenAI：
 
 ```jsonc
 {
@@ -374,19 +354,17 @@ memory({ mode: "import", inputPath: "./memories.json" });
 }
 ```
 
-示例 — 本地 bge-m3（池化通过预设默认为 CLS；如需可覆盖）：
+示例 — 自托管端点：
 
 ```jsonc
 {
-  "embeddingModel": "Xenova/bge-m3",
-  // "embeddingPooling": "cls",
-  // "embeddingDtype": "q8",
+  "embeddingApiUrl": "http://127.0.0.1:8765/v1",
+  "embeddingApiKey": "local-dev-key",
+  "embeddingModel": "nomic-embed-text-v1.5",
 }
 ```
 
-更改 `embeddingModel`、维度、池化或任务前缀可能需要对已存储的记忆重新嵌入，以使存储与查询向量保持对齐。建议为给定数据目录选定一次模型（以及池化/前缀设置）并坚持使用。
-
-**不支持 — Intel Mac（`darwin/x64`）：** 本地持久化需要 `@tursodatabase/database`，其不发布 Intel Mac 原生绑定。固定版本的 `onnxruntime-node` 发行版（`1.24.1+`，包括固定的 `1.31.1`）也缺少 darwin/x64。请使用 Apple Silicon Mac、Linux 或 Windows，或通过 `embeddingApiUrl` + `embeddingApiKey` 使用远程端点（见上方示例）。在受支持平台上，`opencode-mem` 固定 `onnxruntime-node@1.31.1`（来自 `1.24.1` / #225 的 Ort::Env 拆卸修复），并通过 CJS 解析 shim 加载 transformers，以便 OpenCode 嵌套安装保留该绑定。在安装该 shim 之前，transformers 会解析为绝对路径，以免 OpenCode 的 Bun `--compile` 主机因 `Cannot find module '@huggingface/transformers' from ''` 而失败。升级后，请清除 OpenCode 的嵌套插件缓存（`~/.cache/opencode/packages/opencode-mem@*`）并重新安装。
+更改 `embeddingModel`、维度或任务前缀可能需要对已存储的记忆重新嵌入，以使存储与查询向量保持对齐。建议为给定 sqld 数据库选定一次模型（及前缀设置）并坚持使用。
 
 ### 记忆范围
 
@@ -628,7 +606,8 @@ memory({ mode: "import", inputPath: "./memories.json" });
 - 对于拒绝强制工具调用（`tool_choice: "required"`，例如某些思考模式）的模型，在使用 `openai-chat` / `orcarouter` / `atlas-cloud` / `cheaper-inference` / `api-route` / `runcrate` / `cloudgpu` / `standardcompute` 时添加 `"forceToolChoice": false`。
 - 对于 `opencodeProvider` / `opencodeModel`（例如 DeepSeek V4 thinking），OpenCode 仍会为结构化输出发送强制的 `tool_choice`。opencode-mem 在内部 `opencode-mem-structured` 代理上禁用思考（并在变体合并后在 `chat.params` 中重新应用），以便自动捕获与画像学习可以完成。你的交互式聊天代理不变。若捕获仍因 thinking/`tool_choice` 错误失败，请为 `opencodeModel` 选择非思考模型，或配置完整的手动回退（`memoryModel` + `memoryApiUrl`）。
 - **`opencode-claude-auth` / Claude Code：** 自动捕获使用带有你已认证 `anthropic` 提供商的 OpenCode。强制的 `format: json_schema` 常与 Claude-auth 循环，因此 opencode-mem 对 `opencodeProvider: "anthropic"` 使用保留认证的 **text-JSON** 路径（无强制 `StructuredOutput` 工具；用 Zod 解析回复）。步骤看门狗仍会在 2 步后中止失控的内部会话。若捕获仍失败，请配置完整的手动 Anthropic API 密钥回退（`memoryProvider: "anthropic"` + `memoryModel` + `memoryApiUrl` + `memoryApiKey`）— Claude Pro/Max OAuth 无法在 OpenCode 外重用。
-- **不支持的平台：** 不支持 Intel Mac（`darwin/x64`） — `@tursodatabase/database` 与固定版本的 `onnxruntime-node` 发行版（固定 `1.31.1`）不提供 x64 原生绑定。请使用 Apple Silicon、Linux 或 Windows，或通过 `embeddingApiUrl` + `embeddingApiKey` 使用远程嵌入端点。不支持 MLX。
+- **数据库连接错误：** 确认 sqld 正在运行且 `sqldUrl` 指向它（默认 `http://127.0.0.1:8080`），并在服务器需要认证时设置 `sqldAuthToken`。
+- **“需要远程嵌入”错误：** 请同时设置 `embeddingApiUrl` 与 `embeddingApiKey`；没有本地嵌入后端。
 
 ## 公共子路径导出
 
@@ -669,10 +648,10 @@ const { user, project } = getTags(process.cwd());
 bun install
 bun run build
 bun test
-bun run check
+bun run quality
 ```
 
-`bun run check` 会运行 `format:check`、`lint` 和 `typecheck`；`bun run format` 会重写格式。
+`bun run quality` 会运行 `format:check`、`lint` 和 `typecheck`；`bun run format` 会重写格式。
 
 [文档](https://opencode-mem.zhafron.my.id/docs/)由本 README 和 `.github/i18n/` 下的翻译生成；[首页](https://opencode-mem.zhafron.my.id)位于 `github-site/src/`。每个 README 标题都必须在 `github-site/docs-map.json` 中映射到一个文档页面，否则站点构建会失败。可使用 `cd github-site && bun install && bun run build` 在本地构建站点。
 

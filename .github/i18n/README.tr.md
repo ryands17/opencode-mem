@@ -11,80 +11,83 @@
 
 Diller: [🇬🇧](../../README.md) | [🇩🇪](./README.de.md) | [🇨🇳](./README.zh.md) | [🇸🇦](./README.ar.md) | **🇹🇷** | [🇳🇱](./README.nl.md)
 
-Yerel vektör veritabanı teknolojisi kullanarak oturumlar arasında uzun vadeli bağlam saklamayı sağlayan, yapay zeka kodlama ajanları için kalıcı bir bellek sistemi.
+Bir libSQL sunucusu (sqld) tarafından desteklenen vektör araması kullanarak oturumlar arasında uzun vadeli bağlam saklamayı sağlayan, yapay zeka kodlama ajanları için kalıcı bir bellek sistemi.
 
 ## Temel Özellikler
 
-- **Yerel veritabanı:** `storagePath` altında saklanan, yerel vektör aramalı gömülü Turso/libSQL. Ayrı bir vektör veritabanı gerekmez.
+- **Veritabanı:** bir libSQL sunucusu (`sqld`), yerel vektör aramasıyla bellekleri tutar; ayrı bir vektör veritabanı ve yerel bağlayıcı yoktur.
 - **Akıllı prompt tabanlı bellek çıkarımı (auto-capture):** bir oturum boşta kaldığında, arka planda çalışan bir AI isteği teknik çalışmayı kalıcı proje belleklerine dönüştürür.
 - **Otomatik hatırlama:** ilgili bellekler ve kullanıcı profili modelin bağlamına (`chatMessage`) eklenir.
 - **Otomatik kullanıcı profili öğrenme:** tercihlerinizin, kalıplarınızın ve iş akışlarınızın projeler arası bir özeti.
 - **Bellek hijyeni:** akıllı tekilleştirme, isteğe bağlı update-on-capture ve kurtarılabilir çöp kutusuyla isteğe bağlı dreaming birleştirmesi.
 - **Çoklu sağlayıcı AI desteği:** OpenCode'da yapılandırılmış herhangi bir sağlayıcı (`opencodeProvider` / `opencodeModel`) veya manuel bir API: OpenAI Chat Completions, OpenAI Responses, Anthropic, MiniMax, OrcaRouter, Atlas Cloud, Cheaper Inference, API Route, Runcrate, CloudGPU.
-- **Embedding'ler:** CPU üzerinde çalışan 12+ yerel embedding modeli (GPU gerekmez) veya OpenAI uyumlu herhangi bir embedding API'si.
+- **Embedding'ler:** OpenAI uyumlu herhangi bir embedding API'si (zorunlu); yerel model indirme ve GPU gerekmez.
 - **Tam özellikli web arayüzü:** birleşik memory–prompt timeline, kullanıcı profili, beceri kütüphanesi, Markdown vault ve sağlık istatistikleri; isteğe bağlı HTTP Basic Auth ile.
-- **Gizlilik:** `<private>` etiketleri, yakalama öncesinde kimlik bilgisi maskeleme ve isteğe bağlı bekleyen veri şifrelemesi.
+- **Gizlilik:** `<private>` etiketleri ve yakalama öncesinde kimlik bilgisi maskeleme.
 - **Taşınabilirlik:** isteğe bağlı Markdown vault arka ucu ve taşınan veya kopyalanan projeler için `memory` aracının `export` / `import` / `migrate` komutları.
 
 ## Ön Koşullar
 
-Bu eklenti, gömülü Turso (`@tursodatabase/database`) ile `F32_BLOB` vektörleri ve `vector_distance_cos` üzerinden kesin kosinüs araması kullanır. Ayrı bir vektör veritabanı veya özel SQLite derlemesi gerekmez.
+opencode-mem, bellekleri saf JavaScript `@libsql/client/web` taşımasıyla HTTP/WebSocket üzerinden erişilen bir **libSQL sunucusunda (`sqld`)** saklar. `F32_BLOB` vektörleri ve `vector_distance_cos` üzerinden kesin kosinüs araması kullanır. **Yerel bağlayıcı veya yerel ML çalışma zamanı yoktur**, bu nedenle eklenti Bun’ın çalıştığı her yerde çalışır — Intel Mac’ler (`darwin/x64`) dahil. Çalışan bir sqld sunucusu (bkz. [Başlarken](#başlarken)) ve uzak bir embedding uç noktası gerekir.
 
 **Önerilen çalışma zamanı:**
 
 - Bun
 - Standart OpenCode eklenti ortamı
-- Varsayılan yerel embedding modelini kullanıyorsanız ilk kullanımda internet erişimi gerekir; çünkü model `@huggingface/transformers` tarafından indirilir.
+- Bellek veritabanı için Docker (veya bir `sqld` sunucusu çalıştırmanın başka bir yolu)
+- Uzak bir OpenAI uyumlu embedding API'si ve anahtarı (`embeddingApiUrl` + `embeddingApiKey`)
 - Kaynak/geliştirme kurulumlarında derlemeden veya testten önce `bun install` çalıştırın. Yayınlanan eklenti paketi çalışma zamanı bağımlılıklarını OpenCode üzerinden otomatik kurar.
 
-**CI’da test edilen platformlar:** Linux, Windows ve Apple Silicon üzerinde macOS 15 / macOS 26 (`darwin/arm64`). **Intel Mac (`darwin/x64`) desteklenmez** — `@tursodatabase/database` ve sabit `onnxruntime-node` sürümleri x64 yerel bağlayıcı yayınlamaz. Daha eski macOS sürümleri bu matris tarafından dışlanmaz; yalnızca mevcut GitHub barındırmalı runner kümesinin dışındadırlar.
+**CI’da test edilen platformlar:** Linux, Windows, Apple Silicon (`darwin/arm64`) ve Intel (`darwin/x64`) üzerinde macOS. sqld ve uzak embedding’lerin platforma özgü yerel bağlayıcısı yoktur.
 
 **Notlar:**
 
-- Vektör embedding’leri doğrudan Turso’da saklanır ve aranır; eklemeler kesin kosinüs sıralaması için `F32_BLOB` vektörleri depolar.
-- Vektör araması `vector_distance_cos` ile kesin kosinüs mesafesi kullanır (DiskANN / yaklaşık dizin yok); bir sorgu dizgesi verildiğinde isteğe bağlı anahtar kelime hibrit sıralaması vardır (`@tursodatabase/database` FTS5 içermez).
+- Vektör embedding’leri doğrudan sqld’de saklanır ve aranır; eklemeler kesin kosinüs sıralaması için `F32_BLOB` vektörleri depolar.
+- Vektör araması `vector_distance_cos` ile kesin kosinüs mesafesi kullanır (DiskANN / yaklaşık dizin yok); bir sorgu dizgesi verildiğinde isteğe bağlı anahtar kelime hibrit sıralaması vardır.
 - Oturum aramaları indeksli bir `session_id` sütunu kullanır (şema v2’de `metadata.sessionID` üzerinden geri doldurulur).
 - Otomatik yakalama ve kullanıcı profili öğrenme, yapılandırılmış/araç-çağrısı çıktısı döndürebilen bir AI sağlayıcısı gerektirir. Bellek arama/ekleme/listeleme, otomatik yakalama sağlayıcı yapılandırması olmadan da çalışır.
+- Bir kurulumun tüm bellekleri tek bir sqld veritabanında yaşar ve konteyner etiketine (proje/kullanıcı) göre mantıksal olarak bölümlenir. `storagePath` yalnızca yerel önbellekleri ve Markdown vault indekslerini tutar.
 
 ### Donanım / kaynak beklentileri
 
-opencode-mem bir GPU **gerektirmez**. Yerel embedding’ler `@huggingface/transformers` ve ONNX üzerinden CPU’da çalışır (MLX backend yoktur). Ekstra VRAM gerekmez.
+opencode-mem bir GPU veya yerel ML çalışma zamanı **gerektirmez** — embedding’ler yapılandırdığınız uzak API’den gelir, bu nedenle hiçbir model indirilmez veya bellekte tutulmaz.
 
-| İş yükü                                                           | Tipik ek kaynaklar                                                                                                                                                                                                                                                                 |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Yerel embedding’ler** (varsayılan `Xenova/nomic-embed-text-v1`) | Model yükleniyken yaklaşık **0,5–2 GB RAM**, seçtiğiniz Hugging Face kimliğine bağlı. İlk kullanım modeli indirir; disk önbelleği `{storagePath}/.cache` altında yaşar (varsayılan `~/.opencode-mem/data/.cache`) ve model başına genelde **yüzlerce MB ile ~1–2 GB** arasındadır. |
-| **Uzak embedding’ler** (`embeddingApiUrl` + `embeddingApiKey`)    | İhmal edilebilir yerel ML RAM — yalnızca eklenti + Turso ek yükü.                                                                                                                                                                                                                  |
-| **Veritabanı / eklenti**                                          | `storagePath` altında diskte Turso/libSQL. Boyut GPU belleğiyle değil, sakladığınız bellek sayısıyla büyür.                                                                                                                                                                        |
+| İş yükü                                                   | Tipik ek kaynaklar                                                                                                                                                                   |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Embedding’ler** (`embeddingApiUrl` + `embeddingApiKey`) | İhmal edilebilir yerel RAM — yalnızca eklenti; embedding işi API’de gerçekleşir.                                                                                                    |
+| **Veritabanı / eklenti**                                  | Bellekler sqld sunucusunda yaşar. `storagePath` altındaki yerel disk kullanımı önbellekler ve Markdown vault indeksleriyle sınırlıdır.                                              |
 
-Yukarıdaki platform sınırlamaları geçerlidir (Intel Mac `darwin/x64` yok; Apple Silicon, Linux, Windows veya uzak bir embedding uç noktası kullanın). Bkz. [Embedding seçimi / yapılandırması](#embedding-seçimi--yapılandırması).
+Bkz. [Embedding seçimi / yapılandırması](#embedding-seçimi--yapılandırması).
 
 ### Eski SQLite shard’larından yükseltme
 
-Başlangıçta kesintiye uğramış yeniden-embedding değişimleri kurtarılır, libSQL DiskANN indeksleri mevcut Turso motoruna dönüştürülür ve ardından eski shard şeması doğrulanır veya yükseltilir. Motor dönüşümü, bir depoda tamamlanmış eski migrasyon işaretçisi olsa bile çalışır ve saklanan vektörleri yeniden embedding yapmadan korur. Her dönüştürülen veritabanı `<database>.pre-tursodb-<timestamp>.bak` olarak yedeklenir.
+Önceki sürümler her bellek shard’ını `storagePath` altındaki gömülü bir Turso veritabanı dosyasında tutardı. O motor (ve `multiprocess_wal`, WAL indeksi kurtarma, DiskANN dönüşümü ve dosya tabanlı migrasyon işaretçileri) artık kullanılmıyor: bellekler artık tek bir sqld sunucusunda yaşar ve konteyner etiketine göre bölümlenir. Yeni bir eklentiyi eski bir kuruluma karşı başlatmak o eski dosyaları dönüştürmez — sqld’yi başlatın, `sqldUrl` değerini ona yönlendirin ve belleklerinizi taşımak istiyorsanız `memory` aracının `export` / `import` komutlarıyla içe aktarın.
 
-macOS ve Linux’ta birden fazla OpenCode oturumu, Turso’nun deneysel `multiprocess_wal` özelliğiyle aynı `storagePath`’i paylaşabilir (her süreç aynı modu kullanmalıdır — yükseltmeden sonra tüm oturumları yeniden başlatın). Windows’ta motor bu bayrağı reddeder; bu nedenle aynı anda yalnızca bir OpenCode oturumu bellek veritabanlarının sahibi olabilir.
-
-`tursoMultiprocessWal: false` bunun yerine tek-sahip modunda açar: diğer süreçler depoyu paylaşmak yerine `database is locked` ile başarısız olur. Eklenti dışı araçlar aynı dosyalara dokunuyorsa bu daha güvenlidir; çünkü _yazan_ yabancı bir SQLite süreci Turso’nun WAL dizinini bayatlatır ve bir sonraki yazma sessizce kaybolur. `tursoAutoHeal` (varsayılan `true`), bir açılış bayat WAL dizininden dolayı başarısız olduğunda ana veritabanının bir kopyasını doğruladıktan sonra deponun `-shm`/`-tshm` indeks yan dosyalarını `storagePath/recovery/<db>-<timestamp>/` altına taşır ve bir kez yeniden dener. Boş olmayan bir `-wal` asla taşınmaz; böylece commit edilmiş ama henüz checkpoint edilmemiş işlemler korunur; yalnızca eksik veya 0 baytlık `-wal` kaldırılır. Eşzamanlı oturumlar iyileştirmeyi `storagePath/recovery/<db>.lock` üzerinden serileştirir.
-
-Yükseltmeden sonraki ilk başlangıçta opencode-mem mevcut bellek shard veritabanlarını yerel Turso/libSQL vektör biçimine otomatik olarak taşır:
-
-- Her shard yeniden yazılmadan önce `<shard>.db.legacy.bak` olarak yedeklenir
-- İlerleme shard başına `<shard>.db.turso-migrate.json` içinde izlenir
-- Genel bir `.turso-migrated` işaretçisi yalnızca tüm shard’lar başarıyla doğrulandıktan sonra yazılır
-- Normal eklemeler ve silmeler tamamlanmış bir shard migrasyonunu geçersiz kılmaz; başlangıçta vektörlerin okunabilir olduğu ve saklanan boyutlarla eşleştiği hâlâ kontrol edilir
-- Migrasyon sırasında aynı `storagePath`’e karşı birden fazla OpenCode örneği çalıştırmayın; bir kilit dosyası (`.turso-migrate.lock`) eşzamanlı migrasyonu engeller
-- Manuel boyut migrasyonları `.turso-operation.lock` kullanır; diğer eklenti süreçleri migrasyon bitene kadar yeni bellek yazılarını reddeder
-- Kilitler, ilerleme zaman damgası güncellemesi olmadan (veya zaman damgası yoksa dosya değişiklik zamanı) 30 dakika sonra sona erer; sahip süreç hâlâ canlı olsa bile. Bu kira duvar saati kullanır: 30 dakikadan büyük ileri saat sıçraması ilerleyen bir işlemi erken sonlandırabilir; geri sıçrama veya geleceğe tarihli kilit hareketsiz bir kilidin ömrünü uzatabilir. Kilitler benzersiz bir edinme kimliği taşır ve bayat temizleme yalnızca incelediği dosyayı kaldırır. Migrasyonlar ilerlerken heartbeat gönderir ve sahipliğin kaybolduğunu fark ederlerse iptal eder. Bayat-kilit temizliği tanı için günlüğe yazılır.
-
-Migrasyon kesintiye uğrarsa, sonraki başlangıç yedekten otomatik olarak devam eder.
-
-Bir shard uyumsuz hale gelirse (örneğin `embeddingDimensions` değiştikten sonra), yazmalar engellenir ve orijinal veritabanına dokunulmaz. Yerine geçmeden önce bir yedek oluşturup doğrulamak için Web arayüzünün yeniden-embedding migrasyonunu kullanın. Önceki shard `<shard>.db.pre-reembed-<pid>-<timestamp>.bak` olarak kullanılabilir kalır.
+Saklanan vektörler yapılandırılmış embedding’lerle uyumsuz hale gelirse (örneğin `embeddingDimensions` değiştirildikten sonra), o mantıksal shard’a yazmalar engellenir. Yerine geçecek bir yeniyi yeniden oluşturup doğrulamak için Web arayüzünün yeniden-embedding migrasyonunu kullanın; önceki shard değişimden önce sqld’de arşivlenir. `sqldUrl` değerini farklı bir sunucuya veya veritabanına yönlendirmek de eskiye dokunmadan temiz bir depo sağlar.
 
 ## Şema migrasyonları
 
-Yerel Turso shard’ları ve yardımcı veritabanları (`metadata.db`, `user-prompts.db`, `user-profiles.db`, `ai-sessions.db`), `src/services/turso/schema-migrations.ts` içindeki sıralı `PRAGMA user_version` migrasyonlarıyla yükseltilir. Migrasyonlar idempotent’tir: eklentiyi başlatmak yalnızca bekleyen sürümleri uygular.
+sqld’deki bellek tabloları, `_opencode_mem_schema_versions` tablosunda izlenen sıralı, etiket başına sürüm migrasyonlarıyla yükseltilir (`src/services/turso/schema-migrations.ts` içinde uygulanır). Yardımcı veriler (beceriler, kullanıcı prompt’ları, kullanıcı profilleri, AI oturumları) aynı mekanizmayı kendi etiketiyle kullanır. Migrasyonlar idempotent’tir: eklentiyi başlatmak yalnızca bekleyen sürümleri uygular.
 
 ## Başlarken
+
+### sqld kurulumu
+
+Bellekler bir [libSQL sunucusunda (`sqld`)](https://github.com/tursodatabase/libsql) yaşar. Bir tane çalıştırmanın en hızlı yolu, verilerin kap yeniden başlatmalarından sonra da korunması için adlandırılmış bir birimle Docker kullanmaktır:
+
+```bash
+docker run -d --name opencode-mem-sqld \
+  -p 8080:8080 \
+  -v opencode-mem-sqld-data:/var/lib/sqld \
+  -e SQLD_NODE=primary \
+  ghcr.io/tursodatabase/libsql-server:latest
+```
+
+Alternatif olarak [`scripts/sqld-compose.yml`](../../scripts/sqld-compose.yml) kullanın: `docker compose -f scripts/sqld-compose.yml up -d`.
+
+Sunucunun `http://127.0.0.1:8080/health` adresinde sağlıklı olduğunu doğrulayın. Eklenti varsayılan olarak `sqldUrl: "http://127.0.0.1:8080"` kullanır, bu nedenle bu yerel kurulum için yapılandırma değişikliği gerekmez. Uzak bir sunucu için `sqldUrl` değerini ayarlayın ve sunucu kimlik doğrulama gerektiriyorsa `sqldAuthToken` değerini de ayarlayın (`env://…` ve `file://…` referanslarını kabul eder).
+
+Kapı yükseltirken veya yeniden oluştururken adlandırılmış birimi koruyun — onu kaldırmak tüm bellekleri siler. Herhangi bir yıkıcı işlemden önce yedek alın (veya `memory export` çalıştırın). Ayrıca uzak bir embedding uç noktasına da ihtiyacınız vardır; bkz. [Embedding seçimi / yapılandırması](#embedding-seçimi--yapılandırması).
 
 OpenCode v2 için paketi yerel `plugins` listesine ekleyin:
 
@@ -143,15 +146,7 @@ Eklentiyi npm sürümü yerine yerel bir kaynak checkout’undan çalıştırmak
 
 ### İsteğe bağlı durağan veritabanı şifrelemesi
 
-Yerel Turso shard’ları için AES-256-GCM şifrelemesini `~/.config/opencode/opencode-mem.jsonc` içinde etkinleştirin:
-
-```jsonc
-{
-  "databaseEncryptionEnabled": true,
-}
-```
-
-İlk başlangıçta eklenti `~/.config/opencode/opencode-mem-db.key` oluşturur (32 bayt hex anahtar, `chmod 600`) ve mevcut düz metin shard’larını taşır. Anahtarı kendiniz yönetiyorsanız `"databaseEncryptionKey": "env://OPENCODE_MEM_DB_KEY"` veya `"file://~/path/to.key"` ile geçersiz kılın. Anahtarı kaybetmek, şifreli veritabanlarının açılamayacağı anlamına gelir. `databaseEncryptionCipher` şifreleme algoritmasını seçer: `aes256gcm` (varsayılan), `aes128gcm`, `aegis256`, `aegis256x2`, `aegis128l`, `aegis128x2` veya `aegis128x4`.
+Eklenti artık veritabanı şifrelemesini kendisi yönetmiyor — eski `databaseEncryptionEnabled`, `databaseEncryptionKey` ve `databaseEncryptionCipher` seçenekleri kaldırıldı. Bellekler sqld sunucunuzda yaşar, bu nedenle onları o katmanda koruyun: sqld’yi şifreli bir birimde çalıştırın, `sqldUrl` için ağ erişimini kısıtlayın ve sunucu kimlik doğrulama gerektirdiğinde `sqldAuthToken` ayarlayın. Belirteç `env://…` ve `file://…` referanslarını kabul eder; böylece yapılandırma dosyasında düz metin olarak durması gerekmez.
 
 **Windows:** `%USERPROFILE%\.config\opencode\opencode.json` kullanın (örneğin `C:\Users\<you>\.config\opencode\opencode.json`). Bu eklenti OpenCode eklenti girişi için `%APPDATA%` veya `%LOCALAPPDATA%` **okumaz** — dosyayı kullanıcı profilinizdeki `.config\opencode` altına koyun, ardından OpenCode’u yeniden başlatın. Eklenti görünmezse yolu doğrulayın ve yeniden başlatın.
 
@@ -252,7 +247,9 @@ Sık ayarlanan üst düzey seçenekler:
 
 | Seçenek                                                               | Varsayılan                      | Ne yapar                                                                                                                                        |
 | --------------------------------------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `storagePath`                                                         | `"~/.opencode-mem/data"`        | Bellek veritabanlarının bulunduğu konum.                                                                                                        |
+| `sqldUrl`                                                             | `"http://127.0.0.1:8080"`       | Bellekleri tutan libSQL sunucusunun (`sqld`) URL’si.                                                                                            |
+| `sqldAuthToken`                                                       | _(boş)_                         | sqld için kimlik doğrulama belirteci; `env://…` / `file://…` referanslarını kabul eder.                                                        |
+| `storagePath`                                                         | `"~/.opencode-mem/data"`        | Yerel önbellekler ve Markdown vault indeksleri; belleklerin kendisi sqld’de yaşar.                                                             |
 | `webServerEnabled` / `webServerPort` / `webServerHost`                | `true` / `4747` / `"127.0.0.1"` | Web UI sunucusu anahtarı, portu ve bağlanma adresi.                                                                                             |
 | `autoCaptureEnabled`                                                  | `true`                          | Boştaki oturumları belleklere özetler (bir sağlayıcı gerektirir, bkz. [Auto-Capture AI Sağlayıcısı](#otomatik-yakalama-ai-sağlayıcısı)).                |
 | `similarityThreshold` / `maxMemories`                                 | `0.6` / `10`                    | Bellek araması için minimum benzerlik puanı ve maksimum sonuç sayısı.                                                                           |
@@ -264,7 +261,7 @@ Sık ayarlanan üst düzey seçenekler:
 
 ### Markdown vault backend (`memoryBackend`)
 
-Varsayılan olarak bellekler yalnızca `storagePath` altındaki Turso’da yaşar. İsteğe bağlı olarak **genel bir Markdown klasörünü** doğruluk kaynağı olarak ayarlayabilirsiniz (Obsidian/Raneto uyumlu düz `.md` dosyaları — Obsidian’a özel bir entegrasyon değildir):
+Varsayılan olarak bellekler yalnızca sqld’de yaşar. İsteğe bağlı olarak **genel bir Markdown klasörünü** doğruluk kaynağı olarak ayarlayabilirsiniz (Obsidian/Raneto uyumlu düz `.md` dosyaları — Obsidian’a özel bir entegrasyon değildir):
 
 ```jsonc
 {
@@ -275,13 +272,13 @@ Varsayılan olarak bellekler yalnızca `storagePath` altındaki Turso’da yaşa
 
 | Anahtar         | Varsayılan   | Ne yapar                                                                                                                                           |
 | --------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `memoryBackend` | `"database"` | `"database"` içeriği Turso’da tutar. `"markdown"`, `markdownPath` altındaki tüm `.md` dosyalarını doğruluk kaynağı olarak kullanır.               |
+| `memoryBackend` | `"database"` | `"database"` içeriği sqld’de tutar. `"markdown"`, `markdownPath` altındaki tüm `.md` dosyalarını doğruluk kaynağı olarak kullanır.                |
 | `markdownPath`  | —            | `memoryBackend` `"markdown"` iken zorunlu. Vault klasörüne mutlak veya `~/…` yolu. Ayrı bir bellek alt klasörü yok — yol _kendisi_ depodur.       |
 
 Markdown modu açıkken:
 
 - Eklentinin oluşturduğu bellekler YAML frontmatter + gövde ile `{id}.md` olarak yazılır.
-- Klasördeki mevcut notlar (herhangi bir Markdown sayfa stili) içe aktarılır/indekslenir; Turso yalnızca yeniden oluşturulabilir bir anlamsal arama indeksidir.
+- Klasördeki mevcut notlar (herhangi bir Markdown sayfa stili) içe aktarılır/indekslenir; sqld yalnızca yeniden oluşturulabilir bir anlamsal arama indeksidir.
 - Dosya ekleme/düzenleme/silme izlenir ve yeniden indekslenir; Web arayüzü yalnızca bu modda bir **Markdown** kenar çubuğu sayfası gösterir (durum, dosya listesi, yeniden indeks).
 - Markdown’a geçiş indeksi klasörden yeniden oluşturur. Eşleşen dosyası olmayan, yalnızca veritabanında bulunan kayıtlar ancak okunabilir ve boş olmayan bir vault tamamen tarandıktan sonra silinir. Eski veritabanı belleklerini saklamak istiyorsanız önce `memory export` ile dışa aktarın.
 - Vault yoksa, okunamıyorsa, yalnızca kısmen taranmış veya işlenmişse ya da hiç Markdown dosyası içermiyorsa uzlaştırma silme işlemini atlar ve uyarı verir; mevcut indekslenmiş bellekler korunur. Vault'u geri yükleyin veya sorunu giderin, ardından yeniden indeksleyin. Son dosyanın indekslenmiş belleğini bilerek kaldırmak için bu belleği araç veya Web UI üzerinden açıkça silin.
@@ -359,38 +356,21 @@ proje etiketleri arasında gruplanır; kullanıcı kapsamı ayrı kalır.
 
 ### Embedding seçimi / yapılandırması
 
-Embedding’ler bellekler ve kullanıcı profili için benzerlik aramasını güçlendirir. Bunları aynı dosyada yapılandırın (`~/.config/opencode/opencode-mem.jsonc`). **MLX backend yoktur** — yerel embedding’ler Apple MLX değil, ONNX ile `@huggingface/transformers` kullanır.
+Embedding’ler bellekler ve kullanıcı profili için benzerlik aramasını güçlendirir. Bunları `~/.config/opencode/opencode-mem.jsonc` içinde yapılandırın. **Uzak embedding’ler tek backend’dir** — yerel ONNX/transformers modeli, yerel bağlayıcıları her platform için yayınlanmadığı için kaldırıldı. Hem `embeddingApiUrl` hem `embeddingApiKey` zorunludur: ikisinden biri eksikse eklenti bir başlangıç hatası gösterir ve bellekleri saklamayı veya aramayı reddeder.
 
-**Yerel (varsayılan):** yalnızca `embeddingModel` ayarlayın. İlk kullanımda model Hugging Face’ten indirilir ve `{storagePath}/.cache` altında önbelleğe alınır (varsayılan `~/.opencode-mem/data/.cache`). Ağırlıklar ana süreç yaşadığı sürece bellekte kalır; bunları o kadar milisaniyelik boşta kalma süresinden sonra serbest bırakmak için `embeddingIdleTimeoutMs` ayarlayın; sonraki bellek işlemi onları yerel önbellekten yeniden ısıtır (yeniden indirme değil, yaklaşık bir saniye).
+**Uzak (OpenAI uyumlu):** eklenti, Bearer belirteciyle `{embeddingApiUrl}/embeddings` çağırır. `embeddingApiKey`, `memoryApiKey` ile aynı gizli biçimleri kabul eder (`literal`, `env://…`, `file://…`). Uç nokta tutarlı boyutlu vektörler döndürmelidir; uç noktanız boyutu yerleşik bir ön ayarda bildirmiyorsa `embeddingDimensions` ayarlayın.
 
-**Uzak (OpenAI uyumlu):** hem `embeddingApiUrl` hem `embeddingApiKey` ayarlayın. Eklenti ardından Bearer belirteciyle `{embeddingApiUrl}/embeddings` çağırır. `embeddingApiKey`, `memoryApiKey` ile aynı gizli biçimleri kabul eder (`literal`, `env://…`, `file://…`).
+| Anahtar                    | Rol                                                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `embeddingApiUrl`          | **Zorunlu.** OpenAI uyumlu bir embeddings API’sinin temel URL’si (`/v1` ötesinde sondaki yol yok).                              |
+| `embeddingApiKey`          | **Zorunlu.** O uç nokta için API anahtarı; `env://…` / `file://…` referanslarını kabul eder.                                     |
+| `embeddingModel`           | Uç noktanızın sunduğu model adı. Varsayılan: `Xenova/nomic-embed-text-v1` (boyut araması için de kullanılır).                   |
+| `embeddingDimensions`      | İsteğe bağlı geçersiz kılma; genellikle atlayın — boyutlar yerleşik bir haritadan alınır.                                         |
+| `embeddingQueryPrefix`     | Sorgu-görevi embedding’leri için önek. Ayarlanmamış → model ön ayarı veya `embeddingUseTaskPrefixes` true iken Nomic. Açık `""` devre dışı bırakır. |
+| `embeddingDocumentPrefix`  | Belge-görevi embedding’leri için önek (`embeddingQueryPrefix` ile aynı çözüm kuralları).                                         |
+| `embeddingUseTaskPrefixes` | Özel/ön ayar önekleri ayarlanmamışken Nomic `search_query:` / `search_document:` öneklerine katılma. Varsayılan `false`.         |
 
-| Anahtar                    | Rol                                                                                                                                                |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `embeddingModel`           | Hugging Face kimliği (yerel) veya API model adı (uzak). Varsayılan: `Xenova/nomic-embed-text-v1`                                                   |
-| `embeddingDimensions`      | İsteğe bağlı geçersiz kılma; genellikle atlayın — boyutlar yerleşik bir haritadan alınır                                                           |
-| `embeddingPooling`         | Yerel pooling: `"mean"` (varsayılan), `"cls"` veya `"last_token"`. Ayarlanmamış → küçük bilinen-model ön ayarı veya `"mean"`                       |
-| `embeddingQueryPrefix`     | Sorgu-görevi embedding’leri için önek. Ayarlanmamış → model ön ayarı veya `embeddingUseTaskPrefixes` true iken Nomic. Açık `""` devre dışı bırakır |
-| `embeddingDocumentPrefix`  | Belge-görevi embedding’leri için önek (`embeddingQueryPrefix` ile aynı çözüm kuralları)                                                            |
-| `embeddingUseTaskPrefixes` | Özel/ön ayar önekleri ayarlanmamışken Nomic `search_query:` / `search_document:` öneklerine katılma. Varsayılan `false`                            |
-| `embeddingDtype`           | İsteğe bağlı yerel ONNX dtype geçersiz kılması (örn. `"q8"`, `"fp32"`). Ayarlandığında transformers.js `pipeline({ dtype })`’a iletilir            |
-| `embeddingIdleTimeoutMs`   | Yerel modeli bu kadar milisaniye boşta kaldıktan sonra serbest bırakır (örn. 10 dakika için `600000`). `0` (varsayılan) süreç ömrü boyunca yüklü tutar |
-| `embeddingApiUrl`          | OpenAI uyumlu bir embeddings API’si için temel URL (`/v1` ötesinde sondaki yol yok)                                                                |
-| `embeddingApiKey`          | O uç nokta için API anahtarı (`embeddingApiUrl` ile birlikte gerekli)                                                                              |
-
-Önerilen yerel modeller:
-
-| Model                                | Boyut | Notlar                                           |
-| ------------------------------------ | ----- | ------------------------------------------------ |
-| `Xenova/nomic-embed-text-v1`         | 768   | Varsayılan; çok dilli, 8192 bağlam; mean pooling |
-| `Xenova/jina-embeddings-v2-base-en`  | 768   | Yalnızca İngilizce, 8192 bağlam                  |
-| `Xenova/jina-embeddings-v2-small-en` | 512   | Daha hızlı, 8192 bağlam                          |
-| `Xenova/all-MiniLM-L6-v2`            | 384   | Çok hızlı, 512 bağlam                            |
-| `Xenova/all-mpnet-base-v2`           | 768   | İyi kalite, 512 bağlam                           |
-| `Xenova/bge-m3`                      | 1024  | Çok dilli; otomatik CLS pooling                  |
-| `intfloat/multilingual-e5-large`     | 1024  | Otomatik `query:` / `passage:` önekleri          |
-
-Örnek — uzak OpenAI embedding’leri:
+Örnek — OpenAI:
 
 ```jsonc
 {
@@ -400,19 +380,17 @@ Embedding’ler bellekler ve kullanıcı profili için benzerlik aramasını gü
 }
 ```
 
-Örnek — yerel bge-m3 (pooling ön ayar üzerinden CLS’ye varsayılan; gerekirse geçersiz kılın):
+Örnek — kendiniz barındırdığınız bir uç nokta:
 
 ```jsonc
 {
-  "embeddingModel": "Xenova/bge-m3",
-  // "embeddingPooling": "cls",
-  // "embeddingDtype": "q8",
+  "embeddingApiUrl": "http://127.0.0.1:8765/v1",
+  "embeddingApiKey": "local-dev-key",
+  "embeddingModel": "nomic-embed-text-v1.5",
 }
 ```
 
-`embeddingModel`, boyutlar, pooling veya görev öneklerini değiştirmek, depo ve sorgu vektörlerinin hizalı kalması için saklanan belleklerin yeniden embedding’ini gerektirebilir. Belirli bir veri dizini için bir modeli (ve pooling/önek ayarlarını) bir kez seçip bunlara bağlı kalmayı tercih edin.
-
-**Desteklenmez — Intel Mac (`darwin/x64`):** Yerel kalıcılık, Intel Mac yerel bağlayıcısı yayınlamayan `@tursodatabase/database` gerektirir. Sabit `onnxruntime-node` sürümleri (`1.24.1+`, sabitlenmiş `1.31.1` dahil) de darwin/x64 içermez. Apple Silicon Mac, Linux veya Windows kullanın; ya da `embeddingApiUrl` + `embeddingApiKey` ile uzak bir uç nokta (yukarıdaki örnek). Desteklenen platformlarda `opencode-mem`, `onnxruntime-node@1.31.1`’ı sabitler (`1.24.1` / #225’ten Ort::Env teardown düzeltmesi) ve OpenCode iç içe kurulumlarının o bağlayıcıyı koruması için transformers’ı bir CJS çözüm shim’i üzerinden yükler. Transformers, o shim kurulmadan önce mutlak bir yola çözülür; böylece OpenCode’un Bun `--compile` ana bilgisayarı `Cannot find module '@huggingface/transformers' from ''` ile başarısız olmaz. Yükseltmeden sonra OpenCode’un iç içe eklenti önbelleğini temizleyin (`~/.cache/opencode/packages/opencode-mem@*`) ve yeniden kurun.
+`embeddingModel`, boyutları veya görev öneklerini değiştirmek, depo ve sorgu vektörlerinin hizalı kalması için saklanan belleklerin yeniden embedding’ini gerektirebilir. Belirli bir sqld veritabanı için bir modeli (ve önek ayarlarını) bir kez seçip buna bağlı kalmayı tercih edin.
 
 ### Bellek kapsamı
 
@@ -691,7 +669,8 @@ Sorun giderme:
 - Zorlanmış araç çağrılarını (`tool_choice: "required"`, örn. bazı düşünme modları) reddeden modeller için `openai-chat` / `orcarouter` / `atlas-cloud` / `cheaper-inference` / `api-route` / `runcrate` / `cloudgpu` / `standardcompute` kullanırken `"forceToolChoice": false` ekleyin.
 - `opencodeProvider` / `opencodeModel` için (örn. DeepSeek V4 thinking), OpenCode yapılandırılmış çıktı için hâlâ zorlanmış `tool_choice` gönderir. opencode-mem dahili `opencode-mem-structured` ajanında düşünmeyi devre dışı bırakır (ve varyant birleştirmesinden sonra bunu `chat.params` içinde yeniden uygular); böylece otomatik yakalama ve profil öğrenme tamamlanabilir. Etkileşimli sohbet ajanınız değişmez. Yakalama hâlâ bir thinking/`tool_choice` hatasıyla başarısız olursa, `opencodeModel` için düşünmeyen bir model seçin veya eksiksiz bir manuel yedek yapılandırın (`memoryModel` + `memoryApiUrl`).
 - **`opencode-claude-auth` / Claude Code:** otomatik yakalama, kimlik doğrulanmış `anthropic` sağlayıcınızla OpenCode kullanır. Zorlanmış `format: json_schema` Claude-auth ile sık sık döngüye girer; bu nedenle opencode-mem `opencodeProvider: "anthropic"` için kimlik doğrulamayı koruyan bir **metin-JSON** yolu kullanır (zorlanmış `StructuredOutput` araçları yok; yanıt Zod ile ayrıştırılır). Bir adım watchdog’u hâlâ 2 adımdan sonra kaçak dahili oturumları iptal eder. Yakalama hâlâ başarısız olursa, eksiksiz bir manuel Anthropic API anahtarı yedeği yapılandırın (`memoryProvider: "anthropic"` + `memoryModel` + `memoryApiUrl` + `memoryApiKey`) — Claude Pro/Max OAuth OpenCode dışında yeniden kullanılamaz.
-- **Desteklenmeyen platformlar:** Intel Mac (`darwin/x64`) desteklenmez — `@tursodatabase/database` ve sabit `onnxruntime-node` sürümleri (sabitlenmiş `1.31.1`) x64 yerel bağlayıcı yayınlamaz. Apple Silicon, Linux veya Windows kullanın; ya da `embeddingApiUrl` + `embeddingApiKey` ile uzak bir embedding uç noktası. MLX desteklenmez.
+- **Veritabanı bağlantısı hataları:** sqld’nin çalıştığını ve `sqldUrl` değerinin ona işaret ettiğini doğrulayın (varsayılan `http://127.0.0.1:8080`); sunucu kimlik doğrulama gerektiriyorsa `sqldAuthToken` ayarlayın.
+- **"Remote embeddings are required" hatası:** hem `embeddingApiUrl` hem `embeddingApiKey` ayarlayın; yerel bir embedding backend’i yoktur.
 
 ## Genel Alt Yol Dışa Aktarımları
 
@@ -735,10 +714,10 @@ Yerelde derleyin ve test edin:
 bun install
 bun run build
 bun test
-bun run check
+bun run quality
 ```
 
-`bun run check`, `format:check`, `lint` ve `typecheck` komutlarını çalıştırır; `bun run format` biçimlendirmeyi yeniden yazar.
+`bun run quality`, `format:check`, `lint` ve `typecheck` komutlarını çalıştırır; `bun run format` biçimlendirmeyi yeniden yazar.
 
 [Belgeler](https://opencode-mem.zhafron.my.id/docs/) bu README'den ve `.github/i18n/` altındaki çevirilerden oluşturulur; [açılış sayfası](https://opencode-mem.zhafron.my.id) `github-site/src/` içinde bulunur. Her README başlığı `github-site/docs-map.json` içinde bir belge sayfasına eşlenmelidir, aksi takdirde site derlemesi başarısız olur. Siteyi yerelde `cd github-site && bun install && bun run build` ile derleyin.
 
