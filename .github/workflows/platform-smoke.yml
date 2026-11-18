@@ -22,20 +22,18 @@ jobs:
   package-smoke:
     name: ${{ matrix.os }} / package smoke
     runs-on: ${{ matrix.os }}
+    env:
+      SQLD_VERSION: "0.24.32"
+      OPENCODE_MEM_TEST_SQLD_URL: http://127.0.0.1:8080
     strategy:
       fail-fast: false
       matrix:
-        # No native bindings ship with the package anymore: sqld (@libsql/client,
-        # pure JS) provides storage and embeddings are remote-only, so every
-        # platform — including Intel macOS — installs and loads the same code.
-        # Explicit Ubuntu pins (ubuntu-latest → 26.04 starting 2026-10-19).
+        # Intel macOS is the target platform for the sqld backend. macos-13 was
+        # retired 2025-12-04 and macos-14 on 2026-11-02, so macos-15-intel is the
+        # last GitHub-hosted x86_64 runner. No native bindings ship anymore, so
+        # other platforms do not add coverage for the package smoke checks.
         os:
-          - ubuntu-24.04
-          - ubuntu-26.04
-          - windows-latest
-          - macos-13
-          - macos-15
-          - macos-26
+          - macos-15-intel
 
     steps:
       - uses: actions/checkout@v7
@@ -46,6 +44,45 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
+
+      - name: Install and start sqld
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          asset="libsql-server-x86_64-apple-darwin.tar.xz"
+          release="https://github.com/tursodatabase/libsql/releases/download/libsql-server-v${SQLD_VERSION}"
+          dir="$RUNNER_TEMP/sqld"
+          mkdir -p "$dir" "$RUNNER_TEMP/sqld-data"
+          cd "$dir"
+
+          curl --proto '=https' --tlsv1.2 -fsSL -O "$release/$asset"
+          curl --proto '=https' --tlsv1.2 -fsSL -O "$release/$asset.sha256"
+          shasum -a 256 -c "$asset.sha256"
+          tar -xJf "$asset"
+
+          SQLD_DB_PATH="$RUNNER_TEMP/sqld-data" \
+            "$dir/libsql-server-x86_64-apple-darwin/sqld" > "$RUNNER_TEMP/sqld.log" 2>&1 &
+          sqld_pid=$!
+
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/health > /dev/null; then
+              echo "sqld ready"
+              break
+            fi
+            if ! kill -0 "$sqld_pid" 2>/dev/null; then
+              echo "sqld exited unexpectedly"
+              cat "$RUNNER_TEMP/sqld.log"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          curl -fsS http://127.0.0.1:8080/health > /dev/null || {
+            echo "sqld did not become ready"
+            cat "$RUNNER_TEMP/sqld.log"
+            exit 1
+          }
 
       - name: Install source dependencies
         run: bun install
