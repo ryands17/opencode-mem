@@ -38,7 +38,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "quality": "bun run format:check && bun run lint && bun run typecheck",
-    "prepare": "husky"
+    "prepare": "lefthook install"
   },
   "keywords": [
     "opencode",
@@ -80,8 +80,7 @@
     "@commitlint/config-conventional": "21.2.4",
     "@interfere/landmines": "^0.0.0",
     "@types/bun": "^1.4.3",
-    "husky": "^9.1.7",
-    "lint-staged": "^17.6.0",
+    "lefthook": "2.2.2",
     "oxlint": "^1.93.0",
     "prettier": "^3.9.10",
     "prettier-plugin-astro": "^1.1.2",
@@ -98,20 +97,5 @@
   "files": [
     "dist",
     "package.json"
-  ],
-  "lint-staged": {
-    "*.{js,mjs,cjs,ts}": [
-      "oxlint --fix",
-      "prettier --write"
-    ],
-    "*.svelte": [
-      "prettier --write"
-    ],
-    "*.astro": [
-      "prettier --write"
-    ],
-    "*.{css,html,json,jsonc,md,yml,yaml}": [
-      "prettier --write"
-    ]
-  }
+  ]
 }

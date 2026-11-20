@@ -52,7 +52,7 @@ All commits **MUST** follow [Conventional Commits 1.0.0](https://www.conventiona
 
 ### Rules
 
-Enforced locally by commitlint (`@commitlint/config-conventional`) via the `.husky/commit-msg` hook.
+Enforced locally by commitlint (`@commitlint/config-conventional`) via the lefthook `commit-msg` hook.
 
 - Description: imperative, concise, no trailing period (`fix: harden provider discovery`)
 - Scope (optional): area of the change, e.g. `feat(turso):`, `fix(ai):`, `chore(deps):`
