@@ -37,6 +37,7 @@ function runFixture(scriptBody: string): {
   const scriptPath = join(dir, "scenario.mjs");
   writeFileSync(scriptPath, scriptBody);
   const result = Bun.spawnSync({
+    env: { ...process.env },
     cmd: [process.execPath, scriptPath],
     stdout: "pipe",
     stderr: "pipe",
@@ -265,7 +266,6 @@ console.log(JSON.stringify({ out, state }));
     expect(parsed.out.groupsFailed).toBe(parsed.out.groupsConsidered);
     expect(parsed.out.groupsSkipped).toBe(0);
     expect(parsed.out.groupsMerged).toBe(0);
-    // Total provider failure must not advance the idle schedule.
     expect(parsed.state).toBeNull();
   });
 
@@ -362,7 +362,6 @@ console.log(JSON.stringify({ decision, calls }));
       calls: Array<{ channel: string; variant?: string | null }>;
     };
     expect(parsed.decision.action).toBe("keep");
-    // Empty structured output → retry without variant, then external fallback.
     expect(parsed.calls).toEqual([
       { channel: "opencode", variant: "low" },
       { channel: "opencode", variant: null },

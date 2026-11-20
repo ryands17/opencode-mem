@@ -200,6 +200,7 @@ console.log(
   writeFileSync(scriptPath, script);
 
   const spawned = Bun.spawnSync({
+    env: { ...process.env },
     cmd: [process.execPath, scriptPath],
     stdout: "pipe",
     stderr: "pipe",

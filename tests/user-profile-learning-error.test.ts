@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { requiredTestSqldUrl } from "./turso-test-utils.js";
 
 const tempDirs: string[] = [];
 
@@ -53,7 +54,7 @@ mock.module(${JSON.stringify(configUrl)}, () => ({
     // The learning service takes a cross-process lock in sqld before analysis.
     // sqldUrl is required; without it the service skips before calling the provider.
     storagePath: ${JSON.stringify(dir)},
-    sqldUrl: "http://127.0.0.1:8080",
+    sqldUrl: ${JSON.stringify(requiredTestSqldUrl())},
   },
 }));
 
@@ -115,6 +116,7 @@ process.exit(0);
 
   writeFileSync(scriptPath, script, "utf-8");
   const result = Bun.spawnSync({
+    env: { ...process.env },
     cmd: [process.execPath, scriptPath],
     stdout: "pipe",
     stderr: "pipe",

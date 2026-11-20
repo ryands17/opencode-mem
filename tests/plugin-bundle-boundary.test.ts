@@ -14,12 +14,11 @@ function buildBundle(entrypoint: string): string {
     return cached;
   }
 
-  // Isolate from the test-runner resolver cache (oven-sh/bun#22941) via a fresh
-  // Bun process. Prefer --outfile over stdout (stdout is the status line then).
   const dir = mkdtempSync(join(tmpdir(), "opencode-mem-bundle-"));
   tempDirs.push(dir);
   const outfile = join(dir, "bundle.js");
   const result = Bun.spawnSync({
+    env: { ...process.env },
     cmd: [
       process.execPath,
       "build",
@@ -53,9 +52,8 @@ describe("OpenCode plugin loader bundle boundary", () => {
     expect(output).not.toContain("node_modules/@huggingface/transformers");
     expect(output).not.toContain("@huggingface/transformers/src");
     expect(output).not.toContain("@huggingface/transformers/dist");
-    // Guard against the old backend silently coming back too.
     expect(output).not.toContain("node_modules/@xenova/transformers");
-  }, 30_000);
+  });
 
   it("does not pull opencode SDK or OIDC internals into the plugin-loader bundle", () => {
     const output = buildBundle("./dist/plugin.js");
@@ -63,7 +61,7 @@ describe("OpenCode plugin loader bundle boundary", () => {
     expect(output).not.toContain("node_modules/@opencode-ai/sdk");
     expect(output).not.toContain("@vercel/oidc");
     expect(output).not.toContain("getVercelOidcToken");
-  }, 30_000);
+  });
 
   it("resolves the provider module from a single-file bundled lazy loader", async () => {
     const output = buildBundle("./dist/services/ai/opencode-provider-loader.js");
@@ -80,5 +78,5 @@ describe("OpenCode plugin loader bundle boundary", () => {
 
     expect(typeof provider.generateStructuredOutput).toBe("function");
     expect(typeof provider.createV2Client).toBe("function");
-  }, 30_000);
+  });
 });

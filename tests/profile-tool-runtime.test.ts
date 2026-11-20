@@ -9,9 +9,7 @@ type ScenarioInput = {
   sessionID?: string;
   mockGitConfigUnavailable?: boolean;
   readAfterWrite?: boolean;
-  /** Hold the real learning lock before the tool write (proves fail-closed contention). */
   holdLearningLockBeforeWrite?: boolean;
-  /** Mock the lock to count acquire/release (proves the write path takes it). */
   trackLearningLock?: boolean;
 };
 
@@ -206,6 +204,7 @@ console.log(JSON.stringify({
 
   writeFileSync(scriptPath, script, "utf-8");
   const result = Bun.spawnSync({
+    env: { ...process.env },
     cmd: [process.execPath, scriptPath],
     stdout: "pipe",
     stderr: "pipe",

@@ -188,6 +188,7 @@ console.log(JSON.stringify({ channelCalls, logs: logs.map((l) => l.message) }));
   writeFileSync(scriptPath, script);
 
   const result = Bun.spawnSync({
+    env: { ...process.env },
     cmd: [process.execPath, scriptPath],
     stdout: "pipe",
     stderr: "pipe",

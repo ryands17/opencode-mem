@@ -56,9 +56,15 @@ mock.module(${JSON.stringify(loggerUrl)}, () => ({ log: () => {} }));
 const { getUserProfileContext } = await import(${JSON.stringify(contextUrl)});
 console.log(JSON.stringify({ config: CONFIG, context: await getUserProfileContext("fixture") }));`
   );
+  const childEnv: Record<string, string | undefined> = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+  };
+  delete childEnv.OPENCODE_MEM_CONFIG_DIR;
   const result = Bun.spawnSync([process.execPath, "run", scriptPath], {
     cwd: home,
-    env: { ...process.env, HOME: home, USERPROFILE: home },
+    env: childEnv,
     stdout: "pipe",
     stderr: "pipe",
   });

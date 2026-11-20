@@ -10,8 +10,8 @@ let result: {
   failedRecallLoaded: string;
   failedRecallV1: string;
   failedRecallSearchCalls: number;
-  thrownRecallEligible: string[];
-  thrownRecallOtherSession: string[];
+  outageRecallEligible: string[];
+  outageRecallOtherSession: string[];
   v1: string[];
   readSizes: number[];
   ordinaryList: string[];
@@ -30,12 +30,14 @@ let result: {
 
 afterAll(() => rmSync(directory, { recursive: true, force: true }));
 beforeAll(() => {
-  // Keep module mocks and native connections isolated from the rest of the suite.
-  const child = Bun.spawnSync([
-    process.execPath,
-    fileURLToPath(new URL("./fixtures/memory-injection-eligibility.mjs", import.meta.url)),
-    directory,
-  ]);
+  const child = Bun.spawnSync(
+    [
+      process.execPath,
+      fileURLToPath(new URL("./fixtures/memory-injection-eligibility.mjs", import.meta.url)),
+      directory,
+    ],
+    { env: { ...process.env } }
+  );
   expect(child.stderr.toString()).toBe("");
   expect(child.exitCode).toBe(0);
   result = JSON.parse(child.stdout.toString().trim());
@@ -61,9 +63,9 @@ describe("memory injection eligibility", () => {
     expect(result.failedRecallSearchCalls).toBe(2);
   });
 
-  it("preserves project, age, and session isolation after a thrown semantic failure", () => {
-    expect(result.thrownRecallEligible).toEqual(["eligible-a", "eligible-c", "eligible-b"]);
-    expect(result.thrownRecallOtherSession).toEqual(["current-pinned", "eligible-a", "eligible-c"]);
+  it("preserves project, age, and session isolation after a real semantic-layer failure", () => {
+    expect(result.outageRecallEligible).toEqual(["eligible-a", "eligible-c", "eligible-b"]);
+    expect(result.outageRecallOtherSession).toEqual(["current-pinned", "eligible-a", "eligible-c"]);
   });
 
   it("leaves ordinary listing and disabled session exclusion unchanged", () => {
@@ -94,8 +96,6 @@ describe("memory injection eligibility", () => {
   });
 
   it("excludes by session_id with metadata fallback for legacy rows", () => {
-    // session_id wins when set (missing-metadata, session-column-only); legacy
-    // metadata.sessionID still excludes; malformed/null session stays eligible.
     expect(result.metadata).toEqual(["malformed", "different-session"]);
   });
 

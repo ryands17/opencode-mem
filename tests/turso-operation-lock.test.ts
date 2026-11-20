@@ -1,5 +1,4 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import * as fs from "node:fs";
+import { afterEach, describe, expect, it } from "bun:test";
 import {
   existsSync,
   mkdtempSync,
@@ -50,30 +49,63 @@ describe("turso operation lock staleness", () => {
   it("re-evaluates and blocks a fresh replacement between stale read and cleanup", async () => {
     const { assertNoTursoMigrationInProgress } = await withStorage();
     const path = join(baseDir, ".turso-operation.lock");
-    writeFileSync(path, JSON.stringify({ pid: process.pid, timestamp: oldTimestamp() }));
-    const original = fs.readFileSync;
-    let replaced = false;
-    const read = spyOn(fs, "readFileSync").mockImplementation(((
-      ...args: Parameters<typeof original>
-    ) => {
-      const contents = original(...args);
-      if (typeof args[0] === "number" && !replaced) {
-        replaced = true;
-        renameSync(path, `${path}.old`);
-        writeFileSync(
-          path,
-          JSON.stringify({ pid: process.pid, timestamp: new Date().toISOString(), id: "foreign" })
-        );
+    const staleContents = JSON.stringify({ pid: process.pid, timestamp: oldTimestamp() });
+    const logPath = join(baseDir, "race.log");
+    const previousLogFile = process.env.OPENCODE_MEM_LOG_FILE;
+    process.env.OPENCODE_MEM_LOG_FILE = logPath;
+
+    const childScript = `
+      const { existsSync, renameSync, writeFileSync } = require("node:fs");
+      const path = ${JSON.stringify(path)};
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline) {
+        if (!existsSync(path)) continue;
+        try {
+          renameSync(path, path + ".old");
+          writeFileSync(
+            path,
+            JSON.stringify({ pid: process.pid, timestamp: new Date().toISOString(), id: "foreign" })
+          );
+        } catch {}
       }
-      return contents;
-    }) as typeof original);
+    `;
+    const child = Bun.spawn([process.execPath, "-e", childScript], {
+      env: { ...process.env },
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+
+    let raceHit = false;
     try {
-      expect(() => assertNoTursoMigrationInProgress()).toThrow(/writes are temporarily blocked/);
-      expect(replaced).toBe(true);
-      expect(JSON.parse(original(path, "utf-8")).id).toBe("foreign");
+      for (let attempt = 0; attempt < 5000 && !raceHit; attempt++) {
+        writeFileSync(path, staleContents);
+        try {
+          assertNoTursoMigrationInProgress();
+        } catch (error) {
+          const blocked =
+            error instanceof Error && /writes are temporarily blocked/.test(error.message);
+          const failedCleanup =
+            existsSync(logPath) && readFileSync(logPath, "utf-8").includes('"removed":false');
+          if (blocked && failedCleanup) {
+            for (let read = 0; read < 100; read++) {
+              try {
+                if (JSON.parse(readFileSync(path, "utf-8")).id === "foreign") {
+                  raceHit = true;
+                  break;
+                }
+              } catch {}
+            }
+          }
+        }
+      }
     } finally {
-      read.mockRestore();
+      child.kill();
+      await child.exited;
+      if (previousLogFile === undefined) delete process.env.OPENCODE_MEM_LOG_FILE;
+      else process.env.OPENCODE_MEM_LOG_FILE = previousLogFile;
     }
+
+    expect(raceHit).toBe(true);
   });
 
   for (const file of [".turso-operation.lock", ".turso-migrate.lock"]) {
@@ -99,7 +131,6 @@ describe("turso operation lock staleness", () => {
     it(`cleans a dead PID and corrupt JSON in ${file}`, async () => {
       const { assertNoTursoMigrationInProgress } = await withStorage();
       const path = join(baseDir, file);
-      // Outside supported OS PID ranges, so this cannot accidentally name a live process.
       writeFileSync(path, JSON.stringify({ pid: 2147483647, timestamp: new Date().toISOString() }));
       expect(() => assertNoTursoMigrationInProgress()).not.toThrow();
       expect(existsSync(path)).toBe(false);

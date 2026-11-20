@@ -4,20 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/**
- * Auto-capture scheduling liveness: two independent finished sessions must
- * each get their capture consumed, without needing a future idle event.
- *
- * Drives the REAL plugin event handler and the REAL performAutoCapture in
- * isolated Bun children (module-mocked external boundaries only — config,
- * memory client, prompt manager, LLM loader), following the established
- * tests/profile-learning-idle.test.ts child-process pattern. Idle debounce
- * timers are captured and fired deterministically (no 10s wall sleeps).
- */
-
-// file:// URL of the repo root (tests/). Never use URL.pathname: on Windows
-// it yields "/D:/a/..." which is an invalid spawn cwd and a broken file URL
-// base — resolve paths through fileURLToPath and URL-relative href instead.
 const REPO_URL = new URL("../", import.meta.url);
 const REPO_ROOT = fileURLToPath(REPO_URL);
 
@@ -27,18 +13,12 @@ afterAll(() => {
   for (const dir of tempDirs) {
     try {
       rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // Best-effort cleanup.
-    }
+    } catch {}
   }
 });
 
 const u = (p: string) => new URL(p, REPO_URL).href;
 
-/**
- * Spawns an isolated child and returns parsed stdout JSON. The child script
- * body has access to helper snippets defined here (timer harness, mocks).
- */
 function runChild(scriptBody: string): {
   exitCode: number;
   stdout: string;
@@ -106,6 +86,7 @@ ${scriptBody}
 
   writeFileSync(scriptPath, script);
   const result = Bun.spawnSync({
+    env: { ...process.env },
     cmd: [process.execPath, scriptPath],
     cwd: REPO_ROOT,
     stdout: "pipe",
@@ -117,13 +98,10 @@ ${scriptBody}
   let parsed = null;
   try {
     parsed = JSON.parse(stdout);
-  } catch {
-    // scenario may print diagnostics before final JSON on failure
-  }
+  } catch {}
   return { exitCode: result.exitCode, stdout, stderr, parsed };
 }
 
-/** Common plugin-level mocks for scenarios that import the real index.ts. */
 const PLUGIN_MOCKS = `
 mock.module(${JSON.stringify(u("src/config.js"))}, () => ({
   CONFIG: {
@@ -192,9 +170,8 @@ console.log(JSON.stringify({ captureSIDs, armedCount }));
     const queries = r.parsed.captureSIDs.filter((s) => s.endsWith(":query"));
     expect(queries.filter((s) => s.startsWith("sess-A"))).toHaveLength(1);
     expect(queries.filter((s) => s.startsWith("sess-B"))).toHaveLength(1);
-    // two distinct sessions => two independent timers armed before flush
     expect(r.parsed.armedCount).toBe(2);
-  }, 30_000);
+  });
 
   it("same session x3 rapid idles still debounce to exactly one capture", () => {
     const r = runChild(`
@@ -215,7 +192,7 @@ console.log(JSON.stringify({ captureSIDs, armedCount }));
     const queries = r.parsed.captureSIDs.filter((s) => s.startsWith("sess-X:"));
     expect(queries).toHaveLength(1);
     expect(r.parsed.armedCount).toBe(1);
-  }, 30_000);
+  });
 
   it("dispose clears all pending per-session timers; no capture fires afterwards", () => {
     const r = runChild(`
@@ -239,7 +216,7 @@ console.log(JSON.stringify({ captureSIDs, beforeDispose, afterDispose }));
     expect(r.parsed.beforeDispose).toBe(2);
     expect(r.parsed.afterDispose).toBe(0);
     expect(r.parsed.captureSIDs).toHaveLength(0);
-  }, 30_000);
+  });
 
   it("post-dispose late idle event does not arm a new timer (cleanedUp gate)", () => {
     const r = runChild(`
@@ -253,12 +230,9 @@ console.log(JSON.stringify({ captureSIDs, armed: armed.length }));
 `);
 
     expect([r.exitCode, r.stderr]).toEqual([0, ""]);
-    // cleanedUp was set by dispose; the handler must not schedule new work.
-    // (internal-capture check runs first, but a "regular work" title passes it;
-    //  the guard we assert on is: no timer armed + no capture dispatched)
     expect(r.parsed.armed).toBe(0);
     expect(r.parsed.captureSIDs).toHaveLength(0);
-  }, 30_000);
+  });
 });
 
 describe("auto-capture serial queue (real performAutoCapture)", () => {
@@ -368,7 +342,6 @@ console.log(JSON.stringify({ counts, duringBlock, afterEnqueue, llmOrder }));
 
     expect([r.exitCode, r.stderr]).toEqual([0, ""]);
     const c = r.parsed.counts;
-    // A ran alone while B queued (B absent from every counter at that point)
     expect(r.parsed.duringBlock).toEqual({
       query: { "sess-A": 1 },
       claim: { "sess-A": 1 },
@@ -381,16 +354,14 @@ console.log(JSON.stringify({ counts, duringBlock, afterEnqueue, llmOrder }));
       llm: { "sess-A": 1 },
       capture: {},
     });
-    // after release: both sessions fully consumed, each exactly once
     expect(c).toEqual({
       query: { "sess-A": 1, "sess-B": 1 },
       claim: { "sess-A": 1, "sess-B": 1 },
       llm: { "sess-A": 1, "sess-B": 1 },
       capture: { "sess-A": 1, "sess-B": 1 },
     });
-    // strict serialization: A's LLM before B's
     expect(r.parsed.llmOrder).toEqual(["sess-A", "sess-B"]);
-  }, 30_000);
+  });
 
   it("same session enqueued twice executes one DB query pass (dedup by uncaptured rows at run time)", () => {
     const r = runChild(`
@@ -464,11 +435,9 @@ console.log(JSON.stringify({ counts }));
 `);
 
     expect([r.exitCode, r.stderr]).toEqual([0, ""]);
-    // first job captures the row; second job finds zero uncaptured rows and
-    // early-returns after exactly one query — no duplicate summary/LLM call
-    expect(r.parsed.counts.query["sess-X"]).toBe(2); // each queued job queries once
-    expect(r.parsed.counts.llm["sess-X"]).toBe(1); // but only one finds work
-  }, 30_000);
+    expect(r.parsed.counts.query["sess-X"]).toBe(2);
+    expect(r.parsed.counts.llm["sess-X"]).toBe(1);
+  });
 
   it("head-of-queue rejection does not poison the next job; the failing caller sees its error", () => {
     const r = runChild(`
@@ -572,11 +541,9 @@ console.log(JSON.stringify({ captured, dError }));
 `);
 
     expect([r.exitCode, r.stderr]).toEqual([0, ""]);
-    // queue not poisoned: B captured even though A's LLM threw
     expect(r.parsed.captured).toEqual(["sess-B"]);
-    // the DB-failure job rejected to ITS caller with the real error
     expect(r.parsed.dError).toBe("db down");
-  }, 30_000);
+  });
 });
 
 describe("abort-signal support (dispose cancels queued-not-started jobs)", () => {
@@ -671,12 +638,10 @@ console.log(JSON.stringify({ counts, afterAbort }));
 `);
 
     expect([r.exitCode, r.stderr]).toEqual([0, ""]);
-    // B was queued and aborted before start: zero query/claim/llm/capture for B
     expect(r.parsed.afterAbort.query["sess-B"] ?? 0).toBe(0);
     expect(r.parsed.counts.claim["sess-B"] ?? 0).toBe(0);
     expect(r.parsed.counts.llm["sess-B"] ?? 0).toBe(0);
     expect(r.parsed.counts.capture["sess-B"] ?? 0).toBe(0);
-    // in-flight A unaffected by the abort: fully completed and persisted
     expect(r.parsed.counts.capture["sess-A"]).toBe(1);
-  }, 30_000);
+  });
 });

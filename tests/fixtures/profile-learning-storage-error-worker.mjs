@@ -1,23 +1,7 @@
-//
-// Storage-error worker for tests/profile-learning-storage-error.test.ts.
-//
-// Runs the REAL performUserProfileLearning in an isolated Bun child process
-// against the REAL cross-process learning lock (real coordination DB via
-// CONFIG.storagePath in a temp dir). Only external boundaries are mocked:
-// the LLM providers (native opencode + external AIProviderFactory) and the
-// profile manager. The learning service, the lock module, and the lock's
-// SQL are the real compiled sources.
-//
-// Driven by a JSON config path in argv[2]; events are appended as
-// single-line JSON to cfg.eventsFile so the parent can assert exact call
-// counts (externalCalls/update/mark) across processes.
-//
-// Plain JavaScript on purpose: executed by `bun <file>.mjs`, not imported
-// by the test runner.
-//
 import { mock } from "bun:test";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
+import { requiredTestSqldUrl } from "../turso-test-utils.js";
 
 const cfgPath = process.argv[2];
 if (!cfgPath) {
@@ -74,9 +58,6 @@ const prompts = Array.from({ length: promptCount }, (_, i) => ({
 
 const marked = new Set();
 
-// A well-formed stored profile: every consumer between lock acquisition and
-// analyzeUserProfile's merge (decay, category summary, change summary)
-// JSON.parses profileData, so it must be valid with the three arrays.
 const VALID_STORED_PROFILE = {
   id: "stored-profile-1",
   userId: "test@example.com",
@@ -103,13 +84,11 @@ mock.module(configUrl, () => ({
     opencodeModel: "mock-model",
     showUserProfileToasts: false,
     userProfileValidationEnabled: false,
-    // external fallback configured so the fallback path is REACHABLE — the
-    // point of these scenarios is that storage errors must NOT reach it.
     memoryModel: "external-mock",
     memoryApiUrl: "https://external.invalid/v1",
     memoryProvider: "openai-chat",
     storagePath: cfg.storagePath,
-    sqldUrl: cfg.sqldUrl ?? "http://127.0.0.1:8080",
+    sqldUrl: cfg.sqldUrl ?? requiredTestSqldUrl(),
   },
   initConfig: () => {},
   isConfigured: () => true,
@@ -212,8 +191,6 @@ mock.module(llmClientUrl, () => ({
   getOpenCodeClient: async () => ({}),
 }));
 
-// External fallback boundary: if the production bug were still present, a
-// storage error would be misread as a provider fault and land HERE.
 mock.module(providerFactoryUrl, () => ({
   AIProviderFactory: {
     createProvider: () => ({
@@ -276,9 +253,6 @@ try {
   const events = await collectEvents();
 
   if (cfg.holdLockFirst) {
-    // Prove the release completed: after performUserProfileLearning returns
-    // (or throws), the coordination lock must be acquirable again, and a
-    // second run in the SAME process must be allowed to proceed.
     const release = await tryAcquireProfileLearningLock(directory);
     const reacquired = release !== null;
     if (release) await release();

@@ -1,18 +1,7 @@
-//
-// Runs the real performUserProfileLearning in an isolated Bun child process
-// against the real cross-process learning lock (real coordination storage via
-// CONFIG.storagePath). Only the provider/IO boundaries are mocked: the learning
-// service, the lock module, and the profile utils are the real compiled
-// sources. Driven by tests/profile-learning-service-lock.test.ts via a JSON
-// config file path in argv[2]; call events are appended as single-line JSON to
-// cfg.eventsFile so the parent can assert ordering across processes.
-//
-// Plain JavaScript on purpose: this file is executed by `bun <file>.mjs`, not
-// imported by the test runner.
-//
 import { mock } from "bun:test";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
+import { requiredTestSqldUrl } from "../turso-test-utils.js";
 
 const cfgPath = process.argv[2];
 if (!cfgPath) {
@@ -25,7 +14,6 @@ function event(ev, data) {
   appendFileSync(cfg.eventsFile, JSON.stringify({ ev, data: data ?? null }) + "\n");
 }
 
-/** Handshake wait for a file the parent creates — never a fixed sleep. */
 async function waitFile(path, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline && !existsSync(path)) {
@@ -79,7 +67,7 @@ mock.module(configUrl, () => ({
     showUserProfileToasts: false,
     userProfileValidationEnabled: false,
     storagePath: cfg.storagePath,
-    sqldUrl: cfg.sqldUrl ?? "http://127.0.0.1:8080",
+    sqldUrl: cfg.sqldUrl ?? requiredTestSqldUrl(),
   },
   initConfig: () => {},
   isConfigured: () => true,
@@ -96,9 +84,6 @@ mock.module(tagsUrl, () => ({
   }),
 }));
 
-// Route every log line into the event stream: the "skipped (another process
-// holds the learning lock)" label is how the parent proves the loser bounced
-// off the lock rather than silently doing nothing.
 mock.module(loggerUrl, () => ({
   log: (label, data) => event("log", { label, data }),
   safeLog: (label, data) => event("log", { label, data }),
@@ -207,14 +192,14 @@ try {
     }
     case "error-then-retry": {
       const { performUserProfileLearning } = await import(learningUrl);
-      cfg.llmError = true; // first pass fails inside the LLM
+      cfg.llmError = true;
       let firstError = null;
       try {
         await performUserProfileLearning(ctx, directory);
       } catch (e) {
         firstError = e?.message ?? String(e);
       }
-      cfg.llmError = false; // second run in the same process must succeed
+      cfg.llmError = false;
       await performUserProfileLearning(ctx, directory);
       console.log(JSON.stringify({ ok: true, firstError }));
       break;

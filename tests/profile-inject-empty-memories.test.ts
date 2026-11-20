@@ -10,13 +10,14 @@ let result: any;
 afterAll(() => rmSync(directory, { recursive: true, force: true }));
 
 beforeAll(() => {
-  // Isolate module mocks from the suite. Drive the real shared plugin with
-  // maxMemories: 0 so project listing is empty, while injectProfile stays on.
-  const child = Bun.spawnSync([
-    process.execPath,
-    fileURLToPath(new URL("./fixtures/profile-inject-empty-memories.mjs", import.meta.url)),
-    directory,
-  ]);
+  const child = Bun.spawnSync(
+    [
+      process.execPath,
+      fileURLToPath(new URL("./fixtures/profile-inject-empty-memories.mjs", import.meta.url)),
+      directory,
+    ],
+    { env: { ...process.env } }
+  );
   expect(child.exitCode).toBe(0);
   expect(child.stderr.toString()).toBe("");
   result = JSON.parse(child.stdout.toString().trim());
@@ -24,7 +25,6 @@ beforeAll(() => {
 
 describe("profile injection with empty project memories", () => {
   it("still formats context when chatMessage.maxMemories is 0", () => {
-    // maxMemories 0 skips listing/search entirely; format still runs for profile-only inject.
     expect(result.listLimit === 0 || result.listLimit === null).toBe(true);
     expect(result.formatCalls).toHaveLength(2);
     expect(result.formatCalls.every((call: any) => call.resultCount === 0)).toBe(true);

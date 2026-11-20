@@ -83,6 +83,7 @@ ${scriptBody}
 `;
   writeFileSync(scriptPath, script, "utf-8");
   const result = Bun.spawnSync({
+    env: { ...process.env },
     cmd: [process.execPath, scriptPath],
     stdout: "pipe",
     stderr: "pipe",
@@ -121,7 +122,6 @@ console.log(JSON.stringify({ addResult, writeShardCalls }));
 
     expect(result.exitCode).toBe(0);
     expect(result.parsed.addResult.success).toBe(false);
-    // The shard/connection layer must never be reached with the malicious tag.
     expect(result.parsed.writeShardCalls.length).toBe(0);
   });
 

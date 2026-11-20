@@ -297,6 +297,8 @@ Configure at `~/.config/opencode/opencode-mem.jsonc`:
 
 **Windows:** `%USERPROFILE%\.config\opencode\opencode-mem.jsonc` (same `.config\opencode` directory as above — not AppData). Default storage resolves to `%USERPROFILE%\.opencode-mem\data` (the `~` form expands to your user home on Windows as well).
 
+The config directory (`~/.config/opencode`) and data directory (`~/.opencode-mem`) can be relocated with the `OPENCODE_MEM_CONFIG_DIR` and `OPENCODE_MEM_DATA_DIR` environment variables.
+
 The plugin creates a full commented template at this path on first startup. For every setting and comment, see [`opencode-mem.example.jsonc`](opencode-mem.example.jsonc).
 
 Commonly tuned top-level options:
@@ -775,6 +777,10 @@ bun run build
 bun test
 bun run quality
 ```
+
+`bun test` requires a live sqld for the database-backed tests. A preload (`tests/sqld-test-isolation.preload.ts`, wired via `bunfig.toml`) handles it automatically: it starts a throwaway `opencode-mem-sqld-test` container on port 8081, points every test config at it, and removes the container when the run ends. Docker must be running.
+
+If `OPENCODE_MEM_TEST_SQLD_URL` is already set (CI does this against its own ephemeral sqld), it is used as-is and no container is managed. Tests never touch the default sqld URL (`http://127.0.0.1:8080`), which may be a live plugin database — when no test sqld can be provided, they fail fast with instructions instead.
 
 `bun run quality` runs `format:check`, `lint` and `typecheck`; `bun run format` rewrites formatting.
 

@@ -1,21 +1,7 @@
-//
-// Drives the REAL normal memory path — memoryClient.addMemory /
-// searchMemories / listMemories — in an isolated Bun child process against a
-// real temp storage tree, while another process (the profile-learning winner)
-// provably holds the profile-learning coordination lock.
-//
-// Mocked: only the external embedding service (fixed small vectors — no model
-// download, no paid API). NOT mocked: memoryClient, ensureTursoReady, the
-// turso shard/connection managers, scope write locks, or the SQLite writes
-// themselves — so this exercises the real gate the deployment cares about,
-// including the .turso-operation.lock path.
-//
-// Plain JavaScript on purpose: executed by `bun <file>.mjs`, not imported by
-// the test runner.
-//
 import { mock } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
+import { requiredTestSqldUrl } from "../turso-test-utils.js";
 
 const cfgPath = process.argv[2];
 if (!cfgPath) {
@@ -26,9 +12,8 @@ const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
 
 const DIM = cfg.embeddingDim ?? 8;
 
-/** Fixed pseudo-random unit vector per text — deterministic, no model. */
 function fixedVector(text) {
-  const v = new Array(DIM);
+  const v = Array.from({ length: DIM });
   let h = 2166136261;
   for (const c of text) {
     h ^= c.charCodeAt(0);
@@ -44,8 +29,6 @@ function fixedVector(text) {
   return new Float32Array(v.map((x) => x / norm));
 }
 
-// Only the external embedding boundary is mocked. The service object shape
-// mirrors src/services/embedding.ts so client.ts keeps using its real logic.
 mock.module(new URL("../../src/services/embedding.js", import.meta.url).href, () => ({
   embeddingService: {
     embedWithTimeout: async (text) => fixedVector(text ?? ""),
@@ -59,11 +42,10 @@ const configUrl = new URL("../../src/config.js", import.meta.url).href;
 mock.module(configUrl, () => ({
   CONFIG: {
     storagePath: cfg.storagePath,
-    sqldUrl: cfg.sqldUrl ?? "http://127.0.0.1:8080",
+    sqldUrl: cfg.sqldUrl ?? requiredTestSqldUrl(),
     maxMemories: 100,
     similarityThreshold: 0.0,
     memoryDbShardSize: 1000,
-    // Must match the fixed vectors above so the real shard schema accepts them.
     embeddingDimensions: DIM,
     embeddingModel: "mock-fixed-vector",
     maxVectorsPerShard: 1000,
@@ -95,13 +77,9 @@ try {
     new URL("../../src/services/client.js", import.meta.url).href
   );
 
-  // Block until the parent confirms the winner is provably holding the
-  // profile-learning lock, so the write below happens strictly inside the
-  // holding window — no sleep-based inference.
   if (cfg.holdingFile) await waitFile(cfg.holdingFile);
 
   const content = `ordinary memory ${cfg.marker ?? "writer"} ${Date.now()}`;
-  // Real format: {prefix}_{user|project}_{16hex} — validated by the real path.
   const containerTag = `opencode_project_${cfg.projectHash ?? "0123456789abcdef"}`;
 
   const add = await memoryClient.addMemory(content, containerTag, {
@@ -112,7 +90,6 @@ try {
   });
   if (add?.success) counts.add += 1;
   addedId = add?.id ?? null;
-  // Read-back via the real search path (real SQLite read + vector search).
   const search = await memoryClient.searchMemories(content, containerTag, "project");
   if (search?.success) counts.search += 1;
   if (search?.success && search.results?.some((r) => r.id === addedId)) counts.readback += 1;

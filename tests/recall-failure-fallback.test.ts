@@ -1,10 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { fileURLToPath } from "node:url";
 
-const child = Bun.spawnSync([
-  process.execPath,
-  fileURLToPath(new URL("./fixtures/recall-failure-fallback.mjs", import.meta.url)),
-]);
+const child = Bun.spawnSync(
+  [
+    process.execPath,
+    fileURLToPath(new URL("./fixtures/recall-failure-fallback.mjs", import.meta.url)),
+  ],
+  { env: { ...process.env } }
+);
 if (child.exitCode !== 0) throw new Error(child.stderr.toString());
 const result = JSON.parse(child.stdout.toString());
 const ids = (name: string) => result[name].memories?.map((memory: { id: string }) => memory.id);
@@ -19,7 +22,7 @@ describe("semantic recall failure fallback", () => {
       expect(result[name].memories[0].similarity).toBeUndefined();
       expect(result[name].memories[0].sessionId).toBe("previous");
       expect(result[name].context).toContain(
-        'selection="recent" id="recent" created="2026-11-01" project="project"'
+        `selection="recent" id="recent" created="${result.anchor.recentCreatedAt}" project="project"`
       );
       expect(result[name].context).not.toContain("retrieval_score=");
     });
@@ -74,12 +77,11 @@ describe("semantic recall failure fallback", () => {
       "project",
       { limit: 9, similarityThreshold: 0.6 },
     ]);
-    expect(result.failed.calls.list[0]).toEqual([
-      "project",
-      3,
-      "project",
-      { excludeSessionId: "session", createdAfter: Date.UTC(2026, 9, 31) },
-    ]);
+    expect(result.failed.calls.list[0].slice(0, 3)).toEqual(["project", 3, "project"]);
+    expect(result.failed.calls.list[0][3].excludeSessionId).toBe("session");
+    expect(
+      Math.abs(result.failed.calls.list[0][3].createdAfter - (result.anchor.now - 2 * 86400000))
+    ).toBeLessThan(60_000);
     expect(result.allProjects.calls.list[0][2]).toBe("all-projects");
     expect(result.explicitProject.calls.list[0][2]).toBe("project");
     expect(result.disabledFilters.calls.list[0][3]).toEqual({});

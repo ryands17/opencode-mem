@@ -70,7 +70,12 @@ const capture = promptId => ({source: "auto-capture", promptId});
 ${body}
 `
     );
-    const result = Bun.spawnSync({ cmd: [process.execPath, path], stdout: "pipe", stderr: "pipe" });
+    const result = Bun.spawnSync({
+      env: { ...process.env },
+      cmd: [process.execPath, path],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     expect(Buffer.from(result.stderr).toString()).toBe("");
     expect(result.exitCode).toBe(0);
     return JSON.parse(Buffer.from(result.stdout).toString().trim());

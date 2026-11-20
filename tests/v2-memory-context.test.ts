@@ -10,13 +10,14 @@ let result: any;
 afterAll(() => rmSync(directory, { recursive: true, force: true }));
 
 beforeAll(() => {
-  // Isolate module mocks from the suite. Drive the real shared plugin and
-  // adapter with no database, provider calls, or actual host sessions.
-  const child = Bun.spawnSync([
-    process.execPath,
-    fileURLToPath(new URL("./fixtures/v2-memory-context.mjs", import.meta.url)),
-    directory,
-  ]);
+  const child = Bun.spawnSync(
+    [
+      process.execPath,
+      fileURLToPath(new URL("./fixtures/v2-memory-context.mjs", import.meta.url)),
+      directory,
+    ],
+    { env: { ...process.env } }
+  );
   expect(child.exitCode).toBe(0);
   expect(child.stderr.toString()).toBe("");
   result = JSON.parse(child.stdout.toString().trim());

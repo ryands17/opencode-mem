@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import * as fs from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildMemoryProviderConfig } from "../src/services/ai/provider-config.js";
 import { applySafeExtraParams } from "../src/services/ai/providers/base-provider.js";
 import {
@@ -11,56 +13,64 @@ import {
 } from "../src/config.js";
 import { MEMORY_PROVIDER_PRESET_DEFAULTS } from "../src/services/ai/memory-provider-presets.js";
 
-describe("project-scoped config resolution", () => {
-  let readSpy: ReturnType<typeof spyOn>;
-  let existsSpy: ReturnType<typeof spyOn>;
+const inheritedConfigDir = process.env.OPENCODE_MEM_CONFIG_DIR;
 
-  const normalizePath = (p: unknown) => String(p).replace(/\\/g, "/");
+describe("project-scoped config resolution", () => {
+  let globalConfigDir: string;
+  let projectDir: string;
+
+  const writeGlobalConfig = (content: unknown) => {
+    writeFileSync(
+      join(globalConfigDir, "opencode-mem.jsonc"),
+      typeof content === "string" ? content : JSON.stringify(content),
+      "utf-8"
+    );
+  };
+
+  const writeProjectConfig = (content: unknown) => {
+    mkdirSync(join(projectDir, ".opencode"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".opencode", "opencode-mem.jsonc"),
+      typeof content === "string" ? content : JSON.stringify(content),
+      "utf-8"
+    );
+  };
+
+  beforeEach(() => {
+    globalConfigDir = mkdtempSync(join(tmpdir(), "opencode-mem-global-config-"));
+    projectDir = mkdtempSync(join(tmpdir(), "opencode-mem-project-"));
+    process.env.OPENCODE_MEM_CONFIG_DIR = globalConfigDir;
+  });
 
   afterEach(() => {
-    readSpy?.mockRestore();
-    existsSpy?.mockRestore();
-    // Reset to global-only config
+    process.env.OPENCODE_MEM_CONFIG_DIR = inheritedConfigDir!;
+    rmSync(globalConfigDir, { recursive: true, force: true });
+    rmSync(projectDir, { recursive: true, force: true });
     initConfig("/nonexistent-project");
   });
 
   it("uses global config when no project config exists", () => {
-    existsSpy = spyOn(fs, "existsSync").mockImplementation((p) => {
-      const path = normalizePath(p);
-      return path.includes(".config/opencode/opencode-mem");
-    });
-    readSpy = spyOn(fs, "readFileSync").mockReturnValue(
-      JSON.stringify({ opencodeModel: "global-model" })
-    );
-    initConfig("/some/project");
+    writeGlobalConfig({ opencodeModel: "global-model" });
+    initConfig(projectDir);
     expect(CONFIG.opencodeModel).toBe("global-model");
   });
 
   it("project config overrides global config", () => {
-    existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-    readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-      const path = normalizePath(p);
-      if (path.includes(".opencode/opencode-mem")) {
-        return JSON.stringify({
-          opencodeProvider: "openai",
-          opencodeModel: "project-model",
-        }) as any;
-      }
-      return JSON.stringify({
-        opencodeProvider: "anthropic",
-        opencodeModel: "global-model",
-      }) as any;
+    writeGlobalConfig({
+      opencodeProvider: "anthropic",
+      opencodeModel: "global-model",
     });
-    initConfig("/my/project");
+    writeProjectConfig({
+      opencodeProvider: "openai",
+      opencodeModel: "project-model",
+    });
+    initConfig(projectDir);
     expect(CONFIG.opencodeProvider).toBe("openai");
     expect(CONFIG.opencodeModel).toBe("project-model");
   });
 
   it("preserves JSONC string values through configuration loading and provider parameters", () => {
-    existsSpy = spyOn(fs, "existsSync").mockImplementation((p: unknown) =>
-      normalizePath(p).includes(".config/opencode/opencode-mem")
-    );
-    readSpy = spyOn(fs, "readFileSync").mockReturnValue(`{
+    writeGlobalConfig(`{
       "storagePath": "/tmp/cache,]v2",
       "memoryModel": "local-model",
       "memoryApiUrl": "https://example.invalid/v1",
@@ -68,7 +78,7 @@ describe("project-scoped config resolution", () => {
       "memoryExtraParams": {"stop": [",}", ",]",],},
     }`);
 
-    initConfig("/some/project");
+    initConfig(projectDir);
 
     expect(CONFIG.storagePath).toBe("/tmp/cache,]v2");
     expect(CONFIG.memoryExtraParams).toEqual({ stop: [",}", ",]"] });
@@ -79,24 +89,18 @@ describe("project-scoped config resolution", () => {
   });
 
   it("keeps automatic cleanup policy under global configuration", () => {
-    existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-    readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-      const path = normalizePath(p);
-      if (path.includes(".opencode/opencode-mem")) {
-        return JSON.stringify({
-          opencodeModel: "project-model",
-          autoCleanupEnabled: true,
-          autoCleanupRetentionDays: 0,
-        }) as any;
-      }
-      return JSON.stringify({
-        opencodeModel: "global-model",
-        autoCleanupEnabled: false,
-        autoCleanupRetentionDays: 90,
-      }) as any;
+    writeGlobalConfig({
+      opencodeModel: "global-model",
+      autoCleanupEnabled: false,
+      autoCleanupRetentionDays: 90,
+    });
+    writeProjectConfig({
+      opencodeModel: "project-model",
+      autoCleanupEnabled: true,
+      autoCleanupRetentionDays: 0,
     });
 
-    initConfig("/my/project");
+    initConfig(projectDir);
 
     expect(CONFIG.opencodeModel).toBe("project-model");
     expect(CONFIG.autoCleanupEnabled).toBe(false);
@@ -104,17 +108,12 @@ describe("project-scoped config resolution", () => {
   });
 
   it("uses safe cleanup defaults when only project cleanup settings exist", () => {
-    existsSpy = spyOn(fs, "existsSync").mockImplementation((p) =>
-      normalizePath(p).includes("/my/project/.opencode/opencode-mem")
-    );
-    readSpy = spyOn(fs, "readFileSync").mockReturnValue(
-      JSON.stringify({
-        autoCleanupEnabled: true,
-        autoCleanupRetentionDays: -1,
-      })
-    );
+    writeProjectConfig({
+      autoCleanupEnabled: true,
+      autoCleanupRetentionDays: -1,
+    });
 
-    initConfig("/my/project");
+    initConfig(projectDir);
 
     expect(CONFIG.autoCleanupEnabled).toBe(true);
     expect(CONFIG.autoCleanupRetentionDays).toBe(30);
@@ -123,19 +122,13 @@ describe("project-scoped config resolution", () => {
   it("rejects project embedding transport settings before they can inherit secrets", () => {
     const oldOpenAiKey = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = "ambient-secret";
-    existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-    readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-      const path = normalizePath(p);
-      if (path.includes(".opencode/opencode-mem")) {
-        return JSON.stringify({
-          embeddingApiUrl: "https://attacker.example/v1",
-        }) as any;
-      }
-      return JSON.stringify({ embeddingModel: "global-model" }) as any;
+    writeGlobalConfig({ embeddingModel: "global-model" });
+    writeProjectConfig({
+      embeddingApiUrl: "https://attacker.example/v1",
     });
 
     try {
-      expect(() => initConfig("/my/project")).toThrow(
+      expect(() => initConfig(projectDir)).toThrow(
         "Project config cannot set remote provider fields: embeddingApiUrl"
       );
     } finally {
@@ -145,19 +138,13 @@ describe("project-scoped config resolution", () => {
   });
 
   it("rejects project memory provider settings before they can reuse a global key", () => {
-    existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-    readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-      const path = normalizePath(p);
-      if (path.includes(".opencode/opencode-mem")) {
-        return JSON.stringify({
-          memoryProvider: "orcarouter",
-          memoryApiUrl: "https://attacker.example/v1",
-        }) as any;
-      }
-      return JSON.stringify({ memoryApiKey: "global-secret" }) as any;
+    writeGlobalConfig({ memoryApiKey: "global-secret" });
+    writeProjectConfig({
+      memoryProvider: "orcarouter",
+      memoryApiUrl: "https://attacker.example/v1",
     });
 
-    expect(() => initConfig("/my/project")).toThrow(
+    expect(() => initConfig(projectDir)).toThrow(
       "Project config cannot set remote provider fields: memoryProvider, memoryApiUrl"
     );
   });
@@ -167,23 +154,17 @@ describe("project-scoped config resolution", () => {
     const oldMemoryKey = process.env.TEST_MEMORY_KEY;
     process.env.TEST_EMBEDDING_KEY = "global-embedding-secret";
     process.env.TEST_MEMORY_KEY = "global-memory-secret";
-    existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-    readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-      const path = normalizePath(p);
-      if (path.includes(".opencode/opencode-mem")) {
-        return JSON.stringify({ opencodeModel: "project-model" }) as any;
-      }
-      return JSON.stringify({
-        embeddingApiUrl: "https://trusted-embeddings.example/v1",
-        embeddingApiKey: "env://TEST_EMBEDDING_KEY",
-        memoryProvider: "openai-chat",
-        memoryApiUrl: "https://trusted-memory.example/v1",
-        memoryApiKey: "env://TEST_MEMORY_KEY",
-      }) as any;
+    writeGlobalConfig({
+      embeddingApiUrl: "https://trusted-embeddings.example/v1",
+      embeddingApiKey: "env://TEST_EMBEDDING_KEY",
+      memoryProvider: "openai-chat",
+      memoryApiUrl: "https://trusted-memory.example/v1",
+      memoryApiKey: "env://TEST_MEMORY_KEY",
     });
+    writeProjectConfig({ opencodeModel: "project-model" });
 
     try {
-      initConfig("/my/project");
+      initConfig(projectDir);
       expect(CONFIG.opencodeModel).toBe("project-model");
       expect(CONFIG.embeddingApiUrl).toBe("https://trusted-embeddings.example/v1");
       expect(CONFIG.embeddingApiKey).toBe("global-embedding-secret");
@@ -199,139 +180,98 @@ describe("project-scoped config resolution", () => {
   });
 
   it("shallow merge: project adds fields, global fields preserved when not overridden", () => {
-    existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-    readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-      const path = normalizePath(p);
-      if (path.includes(".opencode/opencode-mem")) {
-        return JSON.stringify({ opencodeProvider: "anthropic" }) as any;
-      }
-      return JSON.stringify({ opencodeModel: "claude-haiku", autoCaptureEnabled: false }) as any;
-    });
-    initConfig("/my/project");
+    writeGlobalConfig({ opencodeModel: "claude-haiku", autoCaptureEnabled: false });
+    writeProjectConfig({ opencodeProvider: "anthropic" });
+    initConfig(projectDir);
     expect(CONFIG.opencodeProvider).toBe("anthropic");
     expect(CONFIG.opencodeModel).toBe("claude-haiku");
     expect(CONFIG.autoCaptureEnabled).toBe(false);
   });
 
   it("parses opencodeVariant when set and treats blank values as unset", () => {
-    existsSpy = spyOn(fs, "existsSync").mockImplementation((p) =>
-      normalizePath(p).includes(".config/opencode/opencode-mem")
-    );
-    readSpy = spyOn(fs, "readFileSync");
-
-    readSpy.mockReturnValue(
-      JSON.stringify({
-        opencodeProvider: "newapi",
-        opencodeModel: "grok-4.7",
-        opencodeVariant: "xhigh",
-      }) as any
-    );
-    initConfig("/some/project");
+    writeGlobalConfig({
+      opencodeProvider: "newapi",
+      opencodeModel: "grok-4.7",
+      opencodeVariant: "xhigh",
+    });
+    initConfig(projectDir);
     expect(CONFIG.opencodeVariant).toBe("xhigh");
 
-    readSpy.mockReturnValue(
-      JSON.stringify({
-        opencodeProvider: "newapi",
-        opencodeModel: "grok-4.7",
-        opencodeVariant: "   ",
-      }) as any
-    );
-    initConfig("/some/project");
+    writeGlobalConfig({
+      opencodeProvider: "newapi",
+      opencodeModel: "grok-4.7",
+      opencodeVariant: "   ",
+    });
+    initConfig(projectDir);
     expect(CONFIG.opencodeVariant).toBeUndefined();
 
-    readSpy.mockReturnValue(
-      JSON.stringify({
-        opencodeProvider: "newapi",
-        opencodeModel: "grok-4.7",
-      }) as any
-    );
-    initConfig("/some/project");
+    writeGlobalConfig({
+      opencodeProvider: "newapi",
+      opencodeModel: "grok-4.7",
+    });
+    initConfig(projectDir);
     expect(CONFIG.opencodeVariant).toBeUndefined();
   });
 
   it("parses opencodeTimeoutMs with clamping and default fallback", () => {
-    existsSpy = spyOn(fs, "existsSync").mockImplementation((p) =>
-      normalizePath(p).includes(".config/opencode/opencode-mem")
-    );
-    readSpy = spyOn(fs, "readFileSync");
-
-    readSpy.mockReturnValue(JSON.stringify({ opencodeTimeoutMs: 180000 }) as any);
-    initConfig("/some/project");
+    writeGlobalConfig({ opencodeTimeoutMs: 180000 });
+    initConfig(projectDir);
     expect(CONFIG.opencodeTimeoutMs).toBe(180000);
 
-    // Below the floor.
-    readSpy.mockReturnValue(JSON.stringify({ opencodeTimeoutMs: 500 }) as any);
-    initConfig("/some/project");
+    writeGlobalConfig({ opencodeTimeoutMs: 500 });
+    initConfig(projectDir);
     expect(CONFIG.opencodeTimeoutMs).toBe(10000);
 
-    // Above the ceiling.
-    readSpy.mockReturnValue(JSON.stringify({ opencodeTimeoutMs: 9_999_999 }) as any);
-    initConfig("/some/project");
+    writeGlobalConfig({ opencodeTimeoutMs: 9_999_999 });
+    initConfig(projectDir);
     expect(CONFIG.opencodeTimeoutMs).toBe(600000);
 
-    // Non-finite values fall back to the default.
-    readSpy.mockReturnValue(JSON.stringify({ opencodeTimeoutMs: Number.POSITIVE_INFINITY }) as any);
-    initConfig("/some/project");
+    writeGlobalConfig({ opencodeTimeoutMs: Number.POSITIVE_INFINITY });
+    initConfig(projectDir);
     expect(CONFIG.opencodeTimeoutMs).toBe(90000);
 
-    // Numeric strings are coerced (common in hand-edited JSONC).
-    readSpy.mockReturnValue(JSON.stringify({ opencodeTimeoutMs: "180000" }) as any);
-    initConfig("/some/project");
+    writeGlobalConfig({ opencodeTimeoutMs: "180000" });
+    initConfig(projectDir);
     expect(CONFIG.opencodeTimeoutMs).toBe(180000);
 
-    // Unset keeps the default.
-    readSpy.mockReturnValue(JSON.stringify({}) as any);
-    initConfig("/some/project");
+    writeGlobalConfig({});
+    initConfig(projectDir);
     expect(CONFIG.opencodeTimeoutMs).toBe(90000);
   });
 
   it("parses autoCaptureProviderOrder with default fallback", () => {
-    existsSpy = spyOn(fs, "existsSync").mockImplementation((p) =>
-      normalizePath(p).includes(".config/opencode/opencode-mem")
-    );
-    readSpy = spyOn(fs, "readFileSync");
-
-    readSpy.mockReturnValue(JSON.stringify({ autoCaptureProviderOrder: "external-first" }) as any);
-    initConfig("/some/project");
+    writeGlobalConfig({ autoCaptureProviderOrder: "external-first" });
+    initConfig(projectDir);
     expect(CONFIG.autoCaptureProviderOrder).toBe("external-first");
 
-    readSpy.mockReturnValue(JSON.stringify({ autoCaptureProviderOrder: "opencode-first" }) as any);
-    initConfig("/some/project");
+    writeGlobalConfig({ autoCaptureProviderOrder: "opencode-first" });
+    initConfig(projectDir);
     expect(CONFIG.autoCaptureProviderOrder).toBe("opencode-first");
 
-    // Invalid / unset fall back to the historical default.
-    readSpy.mockReturnValue(JSON.stringify({ autoCaptureProviderOrder: "bogus" }) as any);
-    initConfig("/some/project");
+    writeGlobalConfig({ autoCaptureProviderOrder: "bogus" });
+    initConfig(projectDir);
     expect(CONFIG.autoCaptureProviderOrder).toBe("opencode-first");
 
-    readSpy.mockReturnValue(JSON.stringify({}) as any);
-    initConfig("/some/project");
+    writeGlobalConfig({});
+    initConfig(projectDir);
     expect(CONFIG.autoCaptureProviderOrder).toBe("opencode-first");
   });
 
   it("parses chatMessage.captureChildSessions from the global config", () => {
-    existsSpy = spyOn(fs, "existsSync").mockImplementation((p) =>
-      normalizePath(p).includes(".config/opencode/opencode-mem")
-    );
-    readSpy = spyOn(fs, "readFileSync");
-
-    readSpy.mockReturnValue(
-      JSON.stringify({
-        chatMessage: { captureChildSessions: true },
-      }) as any
-    );
-    initConfig("/some/project");
+    writeGlobalConfig({
+      chatMessage: { captureChildSessions: true },
+    });
+    initConfig(projectDir);
     expect(CONFIG.chatMessage.captureChildSessions).toBe(true);
 
-    readSpy.mockReturnValue(JSON.stringify({ chatMessage: {} }) as any);
-    initConfig("/some/project");
+    writeGlobalConfig({ chatMessage: {} });
+    initConfig(projectDir);
     expect(CONFIG.chatMessage.captureChildSessions).toBe(false);
   });
 
   it("falls back to defaults when neither global nor project config exists", () => {
-    existsSpy = spyOn(fs, "existsSync").mockReturnValue(false);
-    initConfig("/no/config/project");
-    expect(CONFIG.autoCaptureEnabled).toBe(true); // default value
+    initConfig(projectDir);
+    expect(CONFIG.autoCaptureEnabled).toBe(true);
     expect(CONFIG.opencodeProvider).toBeUndefined();
   });
 
@@ -340,16 +280,10 @@ describe("project-scoped config resolution", () => {
     process.env.ATLASCLOUD_API_KEY = "atlas-test-key";
 
     try {
-      existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-      readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-        const path = normalizePath(p);
-        if (path.includes(".opencode/opencode-mem")) {
-          return JSON.stringify({ autoCaptureEnabled: true }) as any;
-        }
-        return JSON.stringify({ memoryProvider: "atlas-cloud" }) as any;
-      });
+      writeGlobalConfig({ memoryProvider: "atlas-cloud" });
+      writeProjectConfig({ autoCaptureEnabled: true });
 
-      initConfig("/my/project");
+      initConfig(projectDir);
 
       expect(CONFIG.memoryProvider).toBe("atlas-cloud");
       expect(CONFIG.memoryModel).toBe(MEMORY_PROVIDER_PRESET_DEFAULTS["atlas-cloud"].model);
@@ -370,21 +304,15 @@ describe("project-scoped config resolution", () => {
   });
 
   it("refuses a project config that switches memoryProvider to Atlas Cloud", () => {
-    existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-    readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-      const path = normalizePath(p);
-      if (path.includes(".opencode/opencode-mem")) {
-        return JSON.stringify({ memoryProvider: "atlas-cloud" }) as any;
-      }
-      return JSON.stringify({
-        memoryProvider: "openai-chat",
-        memoryModel: "gpt-global",
-        memoryApiUrl: "https://api.openai.com/v1",
-        memoryApiKey: "global-openai-secret",
-      }) as any;
+    writeGlobalConfig({
+      memoryProvider: "openai-chat",
+      memoryModel: "gpt-global",
+      memoryApiUrl: "https://api.openai.com/v1",
+      memoryApiKey: "global-openai-secret",
     });
+    writeProjectConfig({ memoryProvider: "atlas-cloud" });
 
-    expect(() => initConfig("/my/project")).toThrow(
+    expect(() => initConfig(projectDir)).toThrow(
       /Project config cannot set remote provider fields: memoryProvider/
     );
   });
@@ -394,16 +322,10 @@ describe("project-scoped config resolution", () => {
     process.env.CHEAPER_INFERENCE_API_KEY = "ci-test-key";
 
     try {
-      existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-      readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-        const path = normalizePath(p);
-        if (path.includes(".opencode/opencode-mem")) {
-          return JSON.stringify({ autoCaptureEnabled: true }) as any;
-        }
-        return JSON.stringify({ memoryProvider: "cheaper-inference" }) as any;
-      });
+      writeGlobalConfig({ memoryProvider: "cheaper-inference" });
+      writeProjectConfig({ autoCaptureEnabled: true });
 
-      initConfig("/my/project");
+      initConfig(projectDir);
 
       expect(CONFIG.memoryProvider).toBe("cheaper-inference");
       expect(CONFIG.memoryModel).toBe(MEMORY_PROVIDER_PRESET_DEFAULTS["cheaper-inference"].model);
@@ -424,21 +346,15 @@ describe("project-scoped config resolution", () => {
   });
 
   it("refuses a project config that switches memoryProvider to Cheaper Inference", () => {
-    existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-    readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-      const path = normalizePath(p);
-      if (path.includes(".opencode/opencode-mem")) {
-        return JSON.stringify({ memoryProvider: "cheaper-inference" }) as any;
-      }
-      return JSON.stringify({
-        memoryProvider: "openai-chat",
-        memoryModel: "gpt-global",
-        memoryApiUrl: "https://api.openai.com/v1",
-        memoryApiKey: "global-openai-secret",
-      }) as any;
+    writeGlobalConfig({
+      memoryProvider: "openai-chat",
+      memoryModel: "gpt-global",
+      memoryApiUrl: "https://api.openai.com/v1",
+      memoryApiKey: "global-openai-secret",
     });
+    writeProjectConfig({ memoryProvider: "cheaper-inference" });
 
-    expect(() => initConfig("/my/project")).toThrow(
+    expect(() => initConfig(projectDir)).toThrow(
       /Project config cannot set remote provider fields: memoryProvider/
     );
   });
@@ -448,16 +364,10 @@ describe("project-scoped config resolution", () => {
     process.env.API_ROUTE_API_KEY = "route-test-key";
 
     try {
-      existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-      readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-        const path = normalizePath(p);
-        if (path.includes(".opencode/opencode-mem")) {
-          return JSON.stringify({ autoCaptureEnabled: true }) as any;
-        }
-        return JSON.stringify({ memoryProvider: "api-route" }) as any;
-      });
+      writeGlobalConfig({ memoryProvider: "api-route" });
+      writeProjectConfig({ autoCaptureEnabled: true });
 
-      initConfig("/my/project");
+      initConfig(projectDir);
 
       expect(CONFIG.memoryProvider).toBe("api-route");
       expect(CONFIG.memoryModel).toBe(MEMORY_PROVIDER_PRESET_DEFAULTS["api-route"].model);
@@ -478,21 +388,15 @@ describe("project-scoped config resolution", () => {
   });
 
   it("refuses a project config that switches memoryProvider to API Route", () => {
-    existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-    readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-      const path = normalizePath(p);
-      if (path.includes(".opencode/opencode-mem")) {
-        return JSON.stringify({ memoryProvider: "api-route" }) as any;
-      }
-      return JSON.stringify({
-        memoryProvider: "openai-chat",
-        memoryModel: "gpt-global",
-        memoryApiUrl: "https://api.openai.com/v1",
-        memoryApiKey: "global-openai-secret",
-      }) as any;
+    writeGlobalConfig({
+      memoryProvider: "openai-chat",
+      memoryModel: "gpt-global",
+      memoryApiUrl: "https://api.openai.com/v1",
+      memoryApiKey: "global-openai-secret",
     });
+    writeProjectConfig({ memoryProvider: "api-route" });
 
-    expect(() => initConfig("/my/project")).toThrow(
+    expect(() => initConfig(projectDir)).toThrow(
       /Project config cannot set remote provider fields: memoryProvider/
     );
   });
@@ -502,16 +406,10 @@ describe("project-scoped config resolution", () => {
     process.env.RUNCRATE_API_KEY = "runcrate-test-key";
 
     try {
-      existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-      readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-        const path = normalizePath(p);
-        if (path.includes(".opencode/opencode-mem")) {
-          return JSON.stringify({ autoCaptureEnabled: true }) as any;
-        }
-        return JSON.stringify({ memoryProvider: "runcrate" }) as any;
-      });
+      writeGlobalConfig({ memoryProvider: "runcrate" });
+      writeProjectConfig({ autoCaptureEnabled: true });
 
-      initConfig("/my/project");
+      initConfig(projectDir);
 
       expect(CONFIG.memoryProvider).toBe("runcrate");
       expect(CONFIG.memoryModel).toBe(MEMORY_PROVIDER_PRESET_DEFAULTS.runcrate.model);
@@ -532,21 +430,15 @@ describe("project-scoped config resolution", () => {
   });
 
   it("refuses a project config that switches memoryProvider to Runcrate", () => {
-    existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-    readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-      const path = normalizePath(p);
-      if (path.includes(".opencode/opencode-mem")) {
-        return JSON.stringify({ memoryProvider: "runcrate" }) as any;
-      }
-      return JSON.stringify({
-        memoryProvider: "openai-chat",
-        memoryModel: "gpt-global",
-        memoryApiUrl: "https://api.openai.com/v1",
-        memoryApiKey: "global-openai-secret",
-      }) as any;
+    writeGlobalConfig({
+      memoryProvider: "openai-chat",
+      memoryModel: "gpt-global",
+      memoryApiUrl: "https://api.openai.com/v1",
+      memoryApiKey: "global-openai-secret",
     });
+    writeProjectConfig({ memoryProvider: "runcrate" });
 
-    expect(() => initConfig("/my/project")).toThrow(
+    expect(() => initConfig(projectDir)).toThrow(
       /Project config cannot set remote provider fields: memoryProvider/
     );
   });
@@ -555,16 +447,10 @@ describe("project-scoped config resolution", () => {
     process.env.CLOUDGPU_API_KEY = "cloudgpu-test-key";
 
     try {
-      existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-      readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-        const path = normalizePath(p);
-        if (path.includes(".opencode/opencode-mem")) {
-          return JSON.stringify({ autoCaptureEnabled: true }) as any;
-        }
-        return JSON.stringify({ memoryProvider: "cloudgpu" }) as any;
-      });
+      writeGlobalConfig({ memoryProvider: "cloudgpu" });
+      writeProjectConfig({ autoCaptureEnabled: true });
 
-      initConfig("/my/project");
+      initConfig(projectDir);
 
       expect(CONFIG.memoryProvider).toBe("cloudgpu");
       expect(CONFIG.memoryModel).toBe(MEMORY_PROVIDER_PRESET_DEFAULTS.cloudgpu.model);
@@ -585,21 +471,15 @@ describe("project-scoped config resolution", () => {
   });
 
   it("refuses a project config that switches memoryProvider to CloudGPU", () => {
-    existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-    readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-      const path = normalizePath(p);
-      if (path.includes(".opencode/opencode-mem")) {
-        return JSON.stringify({ memoryProvider: "cloudgpu" }) as any;
-      }
-      return JSON.stringify({
-        memoryProvider: "openai-chat",
-        memoryModel: "global-model",
-        memoryApiUrl: "https://llm.example.com/v1",
-        memoryApiKey: "global-secret",
-      }) as any;
+    writeGlobalConfig({
+      memoryProvider: "openai-chat",
+      memoryModel: "global-model",
+      memoryApiUrl: "https://llm.example.com/v1",
+      memoryApiKey: "global-secret",
     });
+    writeProjectConfig({ memoryProvider: "cloudgpu" });
 
-    expect(() => initConfig("/my/project")).toThrow(
+    expect(() => initConfig(projectDir)).toThrow(
       /Project config cannot set remote provider fields: memoryProvider/
     );
   });
@@ -609,23 +489,15 @@ describe("project-scoped config resolution", () => {
     process.env.STANDARDCOMPUTE_API_KEY = "standardcompute-test-key";
 
     try {
-      existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-      readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-        const path = normalizePath(p);
-        if (path.includes(".opencode/opencode-mem")) {
-          return JSON.stringify({ autoCaptureEnabled: true }) as any;
-        }
-        return JSON.stringify({ memoryProvider: "standardcompute" }) as any;
-      });
+      writeGlobalConfig({ memoryProvider: "standardcompute" });
+      writeProjectConfig({ autoCaptureEnabled: true });
 
-      initConfig("/my/project");
+      initConfig(projectDir);
 
       expect(CONFIG.memoryProvider).toBe("standardcompute");
       expect(CONFIG.memoryModel).toBe(MEMORY_PROVIDER_PRESET_DEFAULTS.standardcompute.model);
       expect(CONFIG.memoryApiUrl).toBe(MEMORY_PROVIDER_PRESET_DEFAULTS.standardcompute.apiUrl);
       expect(CONFIG.memoryApiKey).toBe("standardcompute-test-key");
-      // Key-only presets must materialize endpoint/model so auto-capture,
-      // dreaming, and profile learning (which gate on CONFIG fields) can run.
       expect(Boolean(CONFIG.memoryModel && CONFIG.memoryApiUrl)).toBe(true);
       expect(CONFIG.autoCaptureProviderStatus).toEqual({
         ready: true,
@@ -645,21 +517,15 @@ describe("project-scoped config resolution", () => {
   });
 
   it("refuses a project config that switches memoryProvider to Standard Compute", () => {
-    existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
-    readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {
-      const path = normalizePath(p);
-      if (path.includes(".opencode/opencode-mem")) {
-        return JSON.stringify({ memoryProvider: "standardcompute" }) as any;
-      }
-      return JSON.stringify({
-        memoryProvider: "openai-chat",
-        memoryModel: "global-model",
-        memoryApiUrl: "https://llm.example.com/v1",
-        memoryApiKey: "global-secret",
-      }) as any;
+    writeGlobalConfig({
+      memoryProvider: "openai-chat",
+      memoryModel: "global-model",
+      memoryApiUrl: "https://llm.example.com/v1",
+      memoryApiKey: "global-secret",
     });
+    writeProjectConfig({ memoryProvider: "standardcompute" });
 
-    expect(() => initConfig("/my/project")).toThrow(
+    expect(() => initConfig(projectDir)).toThrow(
       /Project config cannot set remote provider fields: memoryProvider/
     );
   });
@@ -669,7 +535,6 @@ describe("structured-output timeout derivation", () => {
   it("outer race = configured + 30000 so the inner timeout always fires first", () => {
     expect(outerStructuredOutputTimeoutMs(90_000)).toBe(120_000);
     expect(outerStructuredOutputTimeoutMs(180_000)).toBe(210_000);
-    // Undefined falls back to the default (e.g. a partial CONFIG shape).
     expect(outerStructuredOutputTimeoutMs(undefined)).toBe(OPENCODE_TIMEOUT_MS_DEFAULT + 30_000);
   });
 

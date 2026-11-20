@@ -6,7 +6,6 @@ import { join } from "node:path";
 const source = (path: string) => JSON.stringify(new URL(`../src/${path}`, import.meta.url).href);
 const testUtilUrl = JSON.stringify(new URL("./turso-test-utils.js", import.meta.url).href);
 
-// Isolate real client/DB integration from the suite's process-wide module mocks.
 function scenario(body: string): void {
   const baseDir = mkdtempSync(join(tmpdir(), "markdown-capture-metadata-"));
   try {
@@ -82,6 +81,7 @@ try {
 `
     );
     const result = Bun.spawnSync({
+      env: { ...process.env },
       cmd: [process.execPath, script],
       stdout: "pipe",
       stderr: "pipe",

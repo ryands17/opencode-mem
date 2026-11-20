@@ -2,10 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-// Regression coverage for the profile-learning output language. The structured-output
-// call is mocked and only records the system prompt it would have been sent, so we
-// can assert which language the model is instructed to write in.
+import { requiredTestSqldUrl } from "./turso-test-utils.js";
 
 const tempDirs: string[] = [];
 
@@ -67,7 +64,7 @@ const prompts = promptTexts.map((content, i) => ({
 mock.module(${JSON.stringify(configUrl)}, () => ({
   CONFIG: {
     storagePath: ${JSON.stringify(dir)},
-    sqldUrl: "http://127.0.0.1:8080",
+    sqldUrl: ${JSON.stringify(requiredTestSqldUrl())},
     autoCaptureProviderStatus: { ready: true, mode: "opencode", issues: [] },
     userProfileAnalysisInterval: prompts.length,
     opencodeProvider: "test-provider",
@@ -138,6 +135,7 @@ process.exit(0);
 
   writeFileSync(scriptPath, script, "utf-8");
   const result = Bun.spawnSync({
+    env: { ...process.env },
     cmd: [process.execPath, scriptPath],
     stdout: "pipe",
     stderr: "pipe",
@@ -176,7 +174,6 @@ describe("user profile learning output language", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.parsed?.error).toBeNull();
-    // Sanity check: the context sent to the LLM really is wrapped in the English scaffold.
     expect(result.parsed?.userPrompt).toContain("# User Profile Analysis");
     expect(result.parsed?.systemPrompt).toContain("text in Spanish.");
   });

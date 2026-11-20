@@ -2,11 +2,14 @@ import { describe, expect, it } from "bun:test";
 import { fileURLToPath } from "node:url";
 
 function run(scenario: Record<string, unknown> = {}) {
-  const child = Bun.spawnSync([
-    process.execPath,
-    fileURLToPath(new URL("./fixtures/auto-capture-session-unavailable.mjs", import.meta.url)),
-    JSON.stringify(scenario),
-  ]);
+  const child = Bun.spawnSync(
+    [
+      process.execPath,
+      fileURLToPath(new URL("./fixtures/auto-capture-session-unavailable.mjs", import.meta.url)),
+      JSON.stringify(scenario),
+    ],
+    { env: { ...process.env } }
+  );
   if (child.exitCode !== 0) throw new Error(child.stderr.toString());
   return JSON.parse(child.stdout.toString());
 }

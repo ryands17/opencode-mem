@@ -1,0 +1,2 @@
+[test]
+preload = ["./tests/sqld-test-isolation.preload.ts"]

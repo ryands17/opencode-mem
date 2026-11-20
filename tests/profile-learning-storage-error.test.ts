@@ -3,14 +3,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/**
- * B3 regression: storage faults during stored-profile parse/merge must never
- * be mistaken for provider faults. Runs the REAL performUserProfileLearning
- * and the REAL cross-process lock in real child processes against temp
- * storage; only the external AI boundaries and the profile manager are
- * mocked. The old service fixture pinned getActiveProfile to null, so this
- * path (existing profile → native LLM success → merge) was never covered.
- */
 const tempDirs: string[] = [];
 
 afterAll(() => {
@@ -20,8 +12,7 @@ afterAll(() => {
   }
 });
 
-// Prefer import.meta.dir over URL.pathname: on Windows, pathname keeps a
-// leading slash (`/D:/...`) that Bun.spawnSync cannot execute.
+// WARNING: use import.meta.dir, not URL.pathname — on Windows the pathname keeps a leading slash (/D:/...) that Bun.spawnSync cannot execute.
 const WORKER = join(import.meta.dir, "fixtures", "profile-learning-storage-error-worker.mjs");
 
 interface RunResult {
@@ -43,6 +34,7 @@ function runWorker(cfg: Record<string, unknown>): RunResult {
   writeFileSync(cfgPath, JSON.stringify({ ...cfg, storagePath: dir, eventsFile }));
 
   const result = Bun.spawnSync({
+    env: { ...process.env },
     cmd: [process.execPath, WORKER, cfgPath],
     stdout: "pipe",
     stderr: "pipe",
@@ -68,19 +60,14 @@ describe("profile learning storage errors are not provider faults (B3)", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.parsed?.["error"]).toBe("storage merge failed: simulated cold DB fault");
-    // The merge fault must NOT be treated as a provider fault: the external
-    // LLM is configured and reachable, yet is never called.
     expect(result.parsed?.["externalCalls"]).toBe(0);
     expect(result.parsed?.["updates"]).toBe(0);
     expect(result.parsed?.["marks"]).toBe(0);
-    // The native provider DID succeed before the merge fault.
     expect(result.parsed?.["nativeCalls"]).toBe(1);
     expect(result.parsed?.["merges"]).toBeGreaterThanOrEqual(1);
   });
 
   it("stored-profile parse failure (corrupt profileData) propagates, no fallback", () => {
-    // Corrupt stored profileData: analyzeUserProfile's JSON.parse throws
-    // after a native success — outside the provider catch by design.
     const result = runWorker({ corruptProfileData: true });
 
     expect(result.exitCode).toBe(0);
@@ -107,11 +94,8 @@ describe("profile learning storage errors are not provider faults (B3)", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    // First run propagated the storage error...
     expect(result.parsed?.["error"]).toBe("storage merge failed: simulated cold DB fault");
-    // ...yet the lock is acquirable again immediately...
     expect(result.parsed?.["reacquired"]).toBe(true);
-    // ...and a second run in the same process completes cleanly.
     expect(result.parsed?.["secondRunError"]).toBe(null);
     expect(result.parsed?.["secondRunMarks"]).toBe(1);
   });

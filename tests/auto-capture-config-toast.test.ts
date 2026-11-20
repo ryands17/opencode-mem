@@ -86,6 +86,7 @@ console.log(JSON.stringify({ logs, toasts }));
     writeFileSync(scriptPath, script);
     const proc = Bun.spawnSync(["bun", "run", scriptPath], {
       cwd: dir,
+      env: { ...process.env },
       stdout: "pipe",
       stderr: "pipe",
     });

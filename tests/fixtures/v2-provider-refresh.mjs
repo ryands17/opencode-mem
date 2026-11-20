@@ -1,29 +1,8 @@
-/**
- * Provider-connectivity refresh scenarios (late provider registration).
- *
- * Root cause being regression-guarded: at plugin setup the provider
- * directory often lists only the built-in broker ('opencode'); user-config
- * providers (e.g. 'newapi') register a few seconds later and the host emits
- * provider.updated / model.updated. The plugin must refresh its
- * connectivity snapshot on those events (and on gate misses) instead of
- * trusting the init-time snapshot forever.
- *
- * Runs the real plugin (src/index.js), the real v2 adapter/legacy-client
- * event path, and the real opencode-provider module state. Only peripheral
- * services are mocked. Spawned by tests/v2-provider-refresh.test.ts with
- * HOME/XDG redirected to an isolated sandbox; scenario via argv[2].
- */
 import { mock } from "bun:test";
 
 const scenario = process.argv[2] ?? "bootstrap";
 const moduleUrl = (path) => new URL("../../src/" + path + ".js", import.meta.url).href;
 
-// Directory fixture state, per scenario:
-// - bootstrap/burst/dispose/miss: call #1 sees only the broker, later calls
-//   also include newapi (registered ~2s after setup, like the real host).
-// - capture-error: newapi never appears (miss refresh must still fail).
-// - refresh-error: newapi is present from call #1, but every refresh
-//   (call >= 2) throws — the previous set must be retained.
 const newapiFromCall =
   scenario === "refresh-error" ? 1 : scenario === "capture-error" ? Infinity : 2;
 const failFromCall = scenario === "refresh-error" ? 2 : 0;
@@ -77,7 +56,7 @@ mock.module(moduleUrl("config"), () => ({
     webServerEnabled: false,
     autoUpdate: { enabled: false },
     storagePath: process.env.HOME,
-    sqldUrl: "http://127.0.0.1:8080",
+    sqldUrl: process.env.OPENCODE_MEM_TEST_SQLD_URL ?? "http://127.0.0.1:1",
     embeddingApiUrl: "http://127.0.0.1:8765/v1",
     embeddingApiKey: "test-key",
   },
@@ -177,7 +156,6 @@ const fakeCtx = {
 const client = createLegacyClient(fakeCtx);
 const plugin = await OpenCodeMemPlugin({ directory: "/workspace/project", client });
 
-/** Real adapter wiring; events stay gated until init has settled. */
 function makeAdapter(events) {
   let releaseGate;
   const gate = new Promise((resolve) => (releaseGate = resolve));
@@ -290,8 +268,6 @@ if (scenario === "bootstrap") {
 } else if (scenario === "burst") {
   const events = [];
   for (let i = 0; i < 12; i++) {
-    // Location-bearing (and one payload-envelope) events so the V2 adapter's
-    // eventBelongsToLocation filter forwards the whole burst into legacy.event.
     events.push(
       i % 2
         ? {
@@ -330,7 +306,6 @@ if (scenario === "bootstrap") {
   const cleanup = await registerV2Adapter(adapter.ctx, plugin);
   output.initSettled = await poll(() => opencodeProvider.isProviderConnected("opencode"));
   output.callsBeforeDispose = listCalls;
-  // Unblock the (empty) event stream so the adapter watcher can finish.
   adapter.releaseGate();
   await adapter.drained;
   await cleanup();

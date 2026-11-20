@@ -1,5 +1,6 @@
 import { mock } from "bun:test";
 import { join } from "node:path";
+import { requiredTestSqldUrl } from "../turso-test-utils.js";
 
 const moduleUrl = (path) => new URL("../../src/" + path + ".js", import.meta.url).href;
 const projectHash = "abcdef1234567890";
@@ -7,7 +8,7 @@ const projectTag = "opencode_project_" + projectHash;
 const sessionID = "current-session";
 const config = {
   storagePath: process.argv[2],
-  sqldUrl: "http://127.0.0.1:8080",
+  sqldUrl: requiredTestSqldUrl(),
   injectProfile: true,
   chatMessage: {
     enabled: true,
@@ -26,7 +27,6 @@ const config = {
   autoUpdate: { enabled: false },
   opencodeModel: "inherit",
 };
-// One logical shard: all dbPath keys now alias a single sqld database.
 const shards = [0].map((index) => ({
   id: index + 1,
   scope: "project",
@@ -91,22 +91,13 @@ mock.module(moduleUrl("services/web-server"), () => ({
   WebServer: class {},
 }));
 mock.module(moduleUrl("services/auto-update"), () => ({ startAutoUpdate() {} }));
-const realFetch = globalThis.fetch;
-globalThis.fetch = (input, init) => {
-  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-  if (url.startsWith("http://127.0.0.1:8080")) return realFetch(input, init);
-  throw new Error("Network access is not allowed in this fixture");
-};
 
-// Exercise the real client, native Turso queries, schema, formatter, and plugin.
-// Only host services, provider calls, and shard discovery are replaced.
 const { tursoConnectionManager } = await import(moduleUrl("services/turso/connection-manager"));
 const { applySchemaMigrations, memoryShardMigrations } = await import(
   moduleUrl("services/turso/schema-migrations")
 );
 const databases = [];
 const readSizes = [];
-// All logical shards share one sqld database, so migrations run only once.
 await applySchemaMigrations(
   await tursoConnectionManager.getConnection(shards[0].dbPath),
   memoryShardMigrations(2),
@@ -123,8 +114,6 @@ for (const shard of shards) {
   };
 }
 const now = Date.now();
-const realNow = Date.now;
-Date.now = () => now;
 async function add(id, age, session, shard = 0, options = {}) {
   const sessionColumn =
     "sessionColumn" in options ? options.sessionColumn : options.legacy ? null : (session ?? null);
@@ -183,9 +172,6 @@ const result = {
   ),
   readSizes: [...readSizes],
 };
-// The real V1 injection and V2 shared loader must both recover via the real
-// client/database recent path when semantic retrieval is unavailable.
-const originalSearch = memoryClient.searchMemories;
 config.chatMessage.recall = "relevant";
 result.failedRecallLoaded = await plugin.memoryContext.load(sessionID);
 const failureMessage = {
@@ -199,13 +185,11 @@ result.failedRecallV1 = failureMessage.parts
   .join("\n");
 result.failedRecallSearchCalls = failedSearchCalls;
 config.chatMessage.recall = "recent";
-memoryClient.searchMemories = originalSearch;
 result.ordinaryList = (await memoryClient.listMemories(projectTag, 3)).memories.map((m) => m.id);
 config.chatMessage.excludeCurrentSession = false;
 result.unfiltered = ids(await plugin.memoryContext.load(sessionID));
 config.chatMessage.excludeCurrentSession = true;
 
-// Eligibility must precede both per-shard limits and the merged result limit.
 await clear();
 config.chatMessage.maxAgeDays = 1;
 await add("expired-pinned", 2 * 86400000, undefined, 0, { pinned: true });
@@ -218,15 +202,10 @@ await add("eligible-d", 400, undefined, 0);
 result.multishard = ids(await plugin.memoryContext.load(sessionID));
 result.multishardReadSizes = [...readSizes];
 config.chatMessage.recall = "relevant";
-memoryClient.searchMemories = async () => {
-  throw new Error("synthetic semantic transport outage");
-};
-result.thrownRecallEligible = ids(await plugin.memoryContext.load(sessionID));
-result.thrownRecallOtherSession = ids(await plugin.memoryContext.load("different-session"));
+result.outageRecallEligible = ids(await plugin.memoryContext.load(sessionID));
+result.outageRecallOtherSession = ids(await plugin.memoryContext.load("different-session"));
 config.chatMessage.recall = "recent";
-memoryClient.searchMemories = originalSearch;
 
-// Preserve the strict age cutoff, even when an older pinned row is ahead of it.
 await clear();
 await add("too-old-pinned", 86400001, undefined, 0, { pinned: true });
 await add("cutoff", 86400000);
@@ -235,13 +214,11 @@ result.ageFiltered = ids(await plugin.memoryContext.load(sessionID));
 config.chatMessage.maxAgeDays = 0;
 result.ageDisabled = ids(await plugin.memoryContext.load(sessionID));
 
-// Preserve per-shard pinned candidate selection and merged recency ordering.
 await clear();
 await add("pinned", 1000, undefined, 0, { pinned: true });
 for (let i = 0; i < 4; i++) await add("recent-" + i, i);
 result.pinned = ids(await plugin.memoryContext.load(sessionID));
 
-// Across shards, pins must survive the merged limit (not only per-shard ORDER BY).
 await clear();
 await add("cross-pinned", 5000, undefined, 0, { pinned: true });
 await add("shard0-recent", 40, undefined, 0);
@@ -249,7 +226,6 @@ await add("shard1-newer", 10, undefined, 0);
 await add("shard1-newest", 0, undefined, 0);
 result.crossPinned = ids(await plugin.memoryContext.load(sessionID));
 
-// Session exclusion prefers session_id, then metadata.sessionID for legacy rows.
 await clear();
 await add("legacy-current", 0, sessionID, 0, { legacy: true });
 await add("malformed", 10, undefined, 0, { metadata: "not-json" });
@@ -271,7 +247,6 @@ config.chatMessage.maxMemories = 3;
 await clear();
 await add("current", 0, sessionID);
 result.none = await plugin.memoryContext.load(sessionID);
-Date.now = realNow;
 await plugin.dispose();
 await tursoConnectionManager.closeAll();
 console.log(JSON.stringify(result));

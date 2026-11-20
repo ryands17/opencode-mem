@@ -148,6 +148,7 @@ ${scriptBody}
 `;
   writeFileSync(scriptPath, script, "utf-8");
   const result = Bun.spawnSync({
+    env: { ...process.env },
     cmd: [process.execPath, scriptPath],
     stdout: "pipe",
     stderr: "pipe",
@@ -178,20 +179,16 @@ console.log(JSON.stringify({ batch, progress, updateVectorCalls, updateTagCalls,
     expect(result.exitCode).toBe(0);
     expect(result.parsed).not.toBeNull();
 
-    // Both memories are accounted for, but only the untagged one is rewritten.
     expect(result.parsed.batch.data.processed).toBe(2);
     expect(result.parsed.batch.data.hasMore).toBe(false);
     expect(result.parsed.batch.data.errors).toBe(0);
 
-    // Only the untagged memory is re-vectorized; the finished one is skipped.
     expect(result.parsed.updateVectorCalls).toEqual(["todo1"]);
 
-    // Its content is embedded once (content) plus once (tags) — never the done memory.
     expect(result.parsed.embedCalls).toContain("needs tagging");
     expect(result.parsed.embedCalls).not.toContain("already done content");
     expect(result.parsed.embedCalls.length).toBe(2);
 
-    // Only the untagged memory's tags are written to the database.
     expect(result.parsed.updateTagCalls.length).toBe(1);
     expect(result.parsed.updateTagCalls[0].params[1]).toBe("todo1");
   });

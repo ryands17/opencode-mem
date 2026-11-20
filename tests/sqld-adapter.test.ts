@@ -1,12 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { createClient } from "@libsql/client/web";
 import { TursoDb } from "../src/services/turso/turso-db.js";
+import { requiredTestSqldUrl } from "./turso-test-utils.js";
 
 const table = `sqld_adapter_test_${process.pid}_${Date.now()}`;
 let db: TursoDb;
 
 beforeAll(async () => {
-  db = new TursoDb(createClient({ url: "http://127.0.0.1:8080", concurrency: 1 }));
+  db = new TursoDb(createClient({ url: requiredTestSqldUrl(), concurrency: 1 }));
   await db.execute(`CREATE TABLE ${table} (id TEXT PRIMARY KEY, value TEXT, count INTEGER)`);
 });
 

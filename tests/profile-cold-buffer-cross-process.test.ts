@@ -13,22 +13,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tursoConnectionManager } from "../src/services/turso/connection-manager.js";
 
-// Cross-process cold-buffer safety: two real, independent UserProfileManager
-// instances over one shared storagePath simulate peer learning processes. All
-// assertions go through the public mergeProfileData / deleteProfile surface and
-// use a mocked embedding boundary (no real model download, no network LLM).
-//
-// Every case that should prove persistence actually triggers a save on disk —
-// a merge with empty incoming arrays would never write and would pass even
-// with the refresh fix removed (forbidden false coverage).
-
 let tmpDir: string;
 let coldBufferFile: string;
 const extraDirs: string[] = [];
 
 async function makeManager(dir: string = tmpDir) {
   const { CONFIG } = await import("../src/config.js");
-  // Keep LLM-backed dedup/conflict checks inert (no provider configured).
   delete CONFIG.opencodeProvider;
   delete CONFIG.opencodeModel;
   delete CONFIG.memoryModel;
@@ -40,9 +30,7 @@ async function makeManager(dir: string = tmpDir) {
   return new UserProfileManager();
 }
 
-// Embedding not warmed up -> non-explicit items are buffered (cold start).
 const coldEmbed = { isWarmedUp: false } as any;
-// Warmed up -> buffered items drain into the merge.
 const warmEmbed = {
   isWarmedUp: true,
   embed: async () => new Float32Array(8).fill(0.25),
@@ -54,7 +42,6 @@ const readDisk = () => JSON.parse(readFileSync(coldBufferFile, "utf-8"));
 const descs = (bucket: any) => bucket.preferences.map((p: any) => p.description);
 
 async function coldPush(mgr: any, profileId: string, description: string) {
-  // Real public merge that buffers a non-explicit item and persists it.
   await mgr.mergeProfileData(empty(), { preferences: [pref(description)] }, coldEmbed, profileId);
 }
 
@@ -66,43 +53,30 @@ describe("cold buffer cross-process safety", () => {
 
   afterEach(async () => {
     await tursoConnectionManager.closeAll();
-    await new Promise((r) => setTimeout(r, 50));
-    // Restore permissions first in case a failure left a read-only dir behind.
     try {
+      // WARNING: restore permissions before the rm — a failed round leaves a read-only dir behind and cleanup then fails.
       chmodSync(tmpDir, 0o700);
-    } catch {
-      // ignore
-    }
+    } catch {}
     for (const dir of extraDirs.splice(0)) {
       try {
         rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // ignore leftover test files
-      }
+      } catch {}
     }
     try {
       rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // ignore leftover test files
-    }
+    } catch {}
   });
 
   it("sees a peer's bucket when the file mtime is held fixed (no mtime-based refresh)", async () => {
-    const a = await makeManager(); // peer process
-    const b = await makeManager(); // this process
+    const a = await makeManager();
+    const b = await makeManager();
 
-    // b persists its own bucket first, so an mtime-guarded implementation
-    // would cache a "newer than the peer's write" mtime.
     await coldPush(b, "profile_B", "b own observation");
     expect(readDisk()["profile_B"].preferences).toHaveLength(1);
 
-    // Peer writes its bucket; the file mtime is then pinned to a fixed past
-    // timestamp (same-mtime / stalled-clock world).
     await coldPush(a, "profile_A", "a peer observation");
     utimesSync(coldBufferFile, 1_000_000, 1_000_000);
 
-    // b's next merge must start from the on-disk snapshot: pushing a new
-    // bucket persists the whole snapshot, so A's bucket must survive it.
     await coldPush(b, "profile_C", "c later observation");
 
     const disk = readDisk();
@@ -117,7 +91,6 @@ describe("cold buffer cross-process safety", () => {
 
     await coldPush(b, "profile_B", "b first observation");
     await coldPush(a, "profile_A", "a peer observation after rollback");
-    // Clock rollback: file now looks "older" than b's cached write.
     utimesSync(coldBufferFile, 1, 1);
 
     await coldPush(b, "profile_B", "b second observation");
@@ -132,7 +105,6 @@ describe("cold buffer cross-process safety", () => {
     await coldPush(b, "profile_GONE", "stale bucket entry that must not resurrect");
     expect(readDisk()["profile_GONE"]).toBeDefined();
 
-    // File removed underneath us (peer cleanup / storage reset).
     unlinkSync(coldBufferFile);
 
     await coldPush(b, "profile_NEW", "fresh after delete");
@@ -147,13 +119,10 @@ describe("cold buffer cross-process safety", () => {
     const corrupt = "{not valid json";
     writeFileSync(coldBufferFile, corrupt, "utf-8");
 
-    // Constructing a manager over a corrupt cache must not crash (plugin
-    // import path stays fail-safe)...
     const { UserProfileManager } =
       await import("../src/services/user-profile/user-profile-manager.js");
     expect(() => new UserProfileManager()).not.toThrow();
 
-    // ...but a merge round must refuse to treat unknown data as empty.
     await expect(
       b.mergeProfileData(
         empty(),
@@ -185,7 +154,6 @@ describe("cold buffer cross-process safety", () => {
         rmSync(tmpDir, { recursive: true, force: true });
       }
     }
-    // Recreate the beforeEach dir so afterEach cleanup stays balanced.
     tmpDir = mkdtempSync(join(tmpdir(), "opencode-mem-coldbuf-xproc-"));
     coldBufferFile = join(tmpDir, "cold-buffer.json");
   });
@@ -233,7 +201,6 @@ describe("cold buffer cross-process safety", () => {
         }
         expect(err).toBeInstanceOf(Error);
         expect(readFileSync(coldBufferFile, "utf-8")).toBe(raw);
-        // No tmp leftovers from a failed round.
         expect(readdirSync(tmpDir).filter((f) => f.includes(".tmp"))).toHaveLength(0);
         void name;
       } finally {
@@ -245,7 +212,6 @@ describe("cold buffer cross-process safety", () => {
   });
 
   it("accepts a valid snapshot and a valid legacy flat file", async () => {
-    // Valid per-profile snapshot loads, merges and persists without loss.
     writeFileSync(
       coldBufferFile,
       JSON.stringify({
@@ -263,8 +229,6 @@ describe("cold buffer cross-process safety", () => {
     expect(descs(disk["profile_KEEP"])).toContain("snapshot item kept");
     expect(descs(disk["profile_KEEP"])).toContain("second snapshot item");
 
-    // Valid legacy flat file: accepted (dropped by documented policy), and a
-    // subsequent merge persists a fresh per-profile snapshot — not rejected.
     rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = mkdtempSync(join(tmpdir(), "opencode-mem-coldbuf-xproc-"));
     coldBufferFile = join(tmpDir, "cold-buffer.json");
@@ -282,6 +246,7 @@ describe("cold buffer cross-process safety", () => {
   it("completes a save across byte-granular short writes (ascii + multibyte)", async () => {
     const run = (mode: string, dir: string, desc: string, preExisting: string) => {
       const result = Bun.spawnSync({
+        env: { ...process.env },
         cmd: [
           process.execPath,
           "--preload",
@@ -314,8 +279,6 @@ describe("cold buffer cross-process safety", () => {
       const r = run(mode, dir, desc, "");
       expect(r.ok).toBe(true);
       expect(r.tmpLeft).toBe(0);
-      // The persisted bytes must parse and round-trip the exact description —
-      // a byte-offset bug would slice multi-byte chars into invalid sequences.
       const parsed = JSON.parse(r.targetBytes as string);
       expect(parsed["profile_SW"].preferences[0].description).toBe(desc);
     }
@@ -328,6 +291,7 @@ describe("cold buffer cross-process safety", () => {
       profile_PRE: { preferences: [pref("previous entry")], patterns: [], workflows: [] },
     });
     const result = Bun.spawnSync({
+      env: { ...process.env },
       cmd: [
         process.execPath,
         "--preload",
@@ -420,7 +384,7 @@ describe("cold buffer cross-process safety", () => {
       await coldPush(b, "profile_S", "already persisted entry");
       const before = readFileSync(coldBufferFile, "utf-8");
 
-      chmodSync(tmpDir, 0o500); // dir readable but not writable -> tmp create fails
+      chmodSync(tmpDir, 0o500);
       let err: unknown;
       try {
         err = await b
@@ -436,9 +400,7 @@ describe("cold buffer cross-process safety", () => {
       }
 
       expect(err).toBeInstanceOf(Error);
-      // Atomic write: the failed round leaves the previous content intact.
       expect(readFileSync(coldBufferFile, "utf-8")).toBe(before);
-      // A later successful round persists new data without losing the old.
       await coldPush(b, "profile_T", "retry entry");
       const disk = readDisk();
       expect(descs(disk["profile_T"])).toContain("retry entry");
@@ -485,7 +447,7 @@ describe("cold buffer cross-process safety", () => {
 
   it("deleteProfile removes the bucket from the current on-disk snapshot", async () => {
     const a = await makeManager();
-    const b = await makeManager(); // constructed before any file exists
+    const b = await makeManager();
     await coldPush(a, "profile_KEEP", "kept bucket");
     await coldPush(a, "profile_DOOM", "doomed bucket");
 
@@ -497,16 +459,14 @@ describe("cold buffer cross-process safety", () => {
   });
 
   it("a warm merge drains a peer-buffered bucket through the real merge path", async () => {
-    const a = await makeManager(); // peer buffers while its embedding is cold
+    const a = await makeManager();
     const b = await makeManager();
 
     await coldPush(a, "profile_W", "peer buffered a warm-drainable observation");
-    // Peer file mtime pinned in the past must not hide the bucket from b.
     utimesSync(coldBufferFile, 1_000_000, 1_000_000);
 
     const merged = await b.mergeProfileData(empty(), { preferences: [] }, warmEmbed, "profile_W");
     expect(descs(merged)).toContain("peer buffered a warm-drainable observation");
-    // Drained bucket is empty when persisted -> omitted from disk, not resurrected.
     expect(readDisk()["profile_W"]).toBeUndefined();
   });
 });

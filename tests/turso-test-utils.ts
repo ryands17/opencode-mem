@@ -2,14 +2,19 @@ import { rmSync } from "node:fs";
 import { createClient } from "@libsql/client/web";
 import { RETRYABLE_FILE_LOCK_CODES } from "../src/services/turso/sqlite-handle-release.js";
 
-/**
- * All logical databases share one sqld server, so tests must reset state
- * themselves. Tables are dropped (not just emptied) because tests use different
- * embedding dimensions and schema versions.
- */
+export function requiredTestSqldUrl(): string {
+  const url = process.env.OPENCODE_MEM_TEST_SQLD_URL;
+  if (!url) {
+    throw new Error(
+      "OPENCODE_MEM_TEST_SQLD_URL must point at a dedicated test sqld. Tests refuse the default http://127.0.0.1:8080 — it may be a live plugin database. Start an isolated sqld (e.g. docker run -d -p 8081:8080 -e SQLD_NODE=primary -e SQLD_DB_PATH=test.db ghcr.io/tursodatabase/libsql-server) and export OPENCODE_MEM_TEST_SQLD_URL=http://127.0.0.1:8081."
+    );
+  }
+  return url;
+}
+
 export async function resetSqldState(): Promise<void> {
   const client = createClient({
-    url: process.env.OPENCODE_MEM_TEST_SQLD_URL ?? "http://127.0.0.1:8080",
+    url: requiredTestSqldUrl(),
     concurrency: 1,
   });
   try {
@@ -33,15 +38,10 @@ export async function cleanupTursoTestDirectory(baseDir?: string): Promise<void>
   await closeTursoAndInvalidateCaches();
   if (baseDir) {
     try {
-      // Bounded retry: libsql 0.5.x keeps handles alive until GC, so a file can
-      // stay locked long enough to blow a 5-10s test hook under parallel load.
-      // A lock error on Windows can only escape the retry with its budget
-      // exhausted, so that is the sole path worth warning about.
+      // WARNING: keep the bounded retry — libsql keeps handles alive until GC, so a file can stay locked long enough to flake test hooks under parallel load.
       await withSqliteFileLockRetry(() => rmSync(baseDir, { recursive: true, force: true }), 1);
     } catch (error) {
       if (isExhaustedWindowsLock(error)) {
-        // Best-effort hygiene only: each test uses a unique mkdtemp dir, so a
-        // leftover is harmless garbage, not a suite failure.
         console.warn(`cleanupTursoTestDirectory: could not remove ${baseDir}`, error);
         return;
       }

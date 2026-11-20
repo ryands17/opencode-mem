@@ -1,29 +1,38 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import * as fs from "node:fs";
+import { afterEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { CONFIG, initConfig } from "../src/config.js";
 
-let readSpy: ReturnType<typeof spyOn> | undefined;
-let existsSpy: ReturnType<typeof spyOn> | undefined;
+const inheritedConfigDir = process.env.OPENCODE_MEM_CONFIG_DIR;
 
-function loadConfig(fileConfig: Record<string, unknown>): void {
-  existsSpy?.mockRestore();
-  readSpy?.mockRestore();
-  existsSpy = spyOn(fs, "existsSync").mockImplementation((p) =>
-    String(p).replace(/\\/g, "/").includes(".config/opencode/opencode-mem")
-  );
-  readSpy = spyOn(fs, "readFileSync").mockReturnValue(
+let globalConfigDir: string | undefined;
+
+function prepareConfig(fileConfig: Record<string, unknown>): void {
+  globalConfigDir = mkdtempSync(join(tmpdir(), "opencode-mem-sqld-config-"));
+  process.env.OPENCODE_MEM_CONFIG_DIR = globalConfigDir;
+  writeFileSync(
+    join(globalConfigDir, "opencode-mem.jsonc"),
     JSON.stringify({
       embeddingApiUrl: "http://127.0.0.1:8765/v1",
       embeddingApiKey: "fixture-key",
       ...fileConfig,
-    })
+    }),
+    "utf-8"
   );
+}
+
+function loadConfig(fileConfig: Record<string, unknown>): void {
+  prepareConfig(fileConfig);
   initConfig("/nonexistent-project");
 }
 
 afterEach(() => {
-  readSpy?.mockRestore();
-  existsSpy?.mockRestore();
+  process.env.OPENCODE_MEM_CONFIG_DIR = inheritedConfigDir!;
+  if (globalConfigDir) {
+    rmSync(globalConfigDir, { recursive: true, force: true });
+    globalConfigDir = undefined;
+  }
   initConfig("/nonexistent-project");
 });
 
@@ -59,16 +68,7 @@ describe("sqld config", () => {
   });
 
   it("rejects an invalid sqldUrl scheme", () => {
-    existsSpy = spyOn(fs, "existsSync").mockImplementation((p) =>
-      String(p).replace(/\\/g, "/").includes(".config/opencode/opencode-mem")
-    );
-    readSpy = spyOn(fs, "readFileSync").mockReturnValue(
-      JSON.stringify({
-        embeddingApiUrl: "http://127.0.0.1:8765/v1",
-        embeddingApiKey: "fixture-key",
-        sqldUrl: "ftp://nope",
-      })
-    );
+    prepareConfig({ sqldUrl: "ftp://nope" });
     expect(() => initConfig("/nonexistent-project")).toThrow("Invalid sqldUrl config");
   });
 

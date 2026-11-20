@@ -2,15 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-// Regression coverage for the profile-analysis system prompt mode. The same
-// analysis is served through two transports:
-//   - the OpenCode structured-output path (no tools exist there; a tool
-//     instruction makes obedient models stall with a preamble instead of
-//     returning JSON), and
-//   - the external-API tool-call path (provider.executeToolCall with the
-//     update_user_profile tool schema, which REQUIRES the tool instruction).
-// The scenario subprocesses below capture the system prompt each path sends.
+import { requiredTestSqldUrl } from "./turso-test-utils.js";
 
 const tempDirs: string[] = [];
 
@@ -69,7 +61,7 @@ mock.module(${JSON.stringify(configUrl)}, () => ({
     userProfileAnalysisInterval: prompts.length,
     showUserProfileToasts: false,
     storagePath: ${JSON.stringify(dir)},
-    sqldUrl: "http://127.0.0.1:8080",
+    sqldUrl: ${JSON.stringify(requiredTestSqldUrl())},
     opencodeTimeoutMs: 90000,
     ${
       mode === "opencode"
@@ -159,6 +151,7 @@ process.exit(0);
 
   writeFileSync(scriptPath, script, "utf-8");
   const result = Bun.spawnSync({
+    env: { ...process.env },
     cmd: [process.execPath, scriptPath],
     stdout: "pipe",
     stderr: "pipe",
@@ -198,11 +191,8 @@ describe("user profile learning system prompt mode", () => {
     expect(result.stderr).toBe("");
     expect(result.parsed?.error).toBeNull();
     expect(result.parsed?.structuredSystemPrompt).toBeTruthy();
-    // No tool mention: on the v2 Generate API no tools exist, and the model
-    // obeying the old sentence stalled with a preamble and no JSON.
     expect(result.parsed?.structuredSystemPrompt).not.toContain("update_user_profile");
     expect(result.parsed?.structuredSystemPrompt).not.toContain("tool");
-    // The model must be told to answer with the profile JSON itself.
     expect(result.parsed?.structuredSystemPrompt).toContain("JSON object");
   });
 

@@ -1,10 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { fileURLToPath } from "node:url";
 
-const child = Bun.spawnSync([
-  process.execPath,
-  fileURLToPath(new URL("./fixtures/recall-selection-labels.mjs", import.meta.url)),
-]);
+const child = Bun.spawnSync(
+  [
+    process.execPath,
+    fileURLToPath(new URL("./fixtures/recall-selection-labels.mjs", import.meta.url)),
+  ],
+  { env: { ...process.env } }
+);
 if (child.exitCode !== 0) throw new Error(child.stderr.toString());
 const result = JSON.parse(child.stdout.toString());
 

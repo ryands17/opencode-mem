@@ -9,9 +9,7 @@ afterAll(() => {
   for (const dir of tempDirs) {
     try {
       rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // Best-effort cleanup.
-    }
+    } catch {}
   }
 });
 
@@ -33,11 +31,6 @@ const loggerUrl = new URL("../src/services/logger.js", import.meta.url).href;
 const languageUrl = new URL("../src/services/language-detector.js", import.meta.url).href;
 const tursoReadyUrl = new URL("../src/services/turso/ready.js", import.meta.url).href;
 
-/**
- * Drives the real plugin's `session.idle` handler in an isolated Bun process so
- * the module mocks below cannot leak into sibling test files, then reports which
- * background jobs the handler actually invoked.
- */
 function runIdleScenario(opts: {
   owner?: boolean;
   webServerEnabled?: boolean;
@@ -125,6 +118,19 @@ mock.module(${JSON.stringify(webServerUrl)}, () => ({
   WebServer: class {},
 }));
 
+// ---- deterministic 10s idle-debounce harness (installed before plugin import) ----
+const armed = [];
+const realSetTimeout = globalThis.setTimeout;
+globalThis.setTimeout = (fn, delay, ...rest) => {
+  const h = realSetTimeout(fn, delay, ...rest);
+  if (delay === 10000) armed.push({ handle: h, fn });
+  return h;
+};
+const fireIdleDebounce = async () => {
+  const live = armed.splice(0);
+  for (const t of live) { clearTimeout(t.handle); await t.fn(); }
+};
+
 const mockClient = {
   session: {
     get: async () => ({ data: ${internalSession} ? { title: INTERNAL_TITLE } : { title: "regular work" } }),
@@ -144,14 +150,15 @@ await plugin.event({
   event: { type: "session.idle", properties: { sessionID: "user-session" } },
 });
 
-// The handler debounces idle work behind a 10s timer.
-await new Promise((resolve) => setTimeout(resolve, 10_600));
+// Fire the handler's debounced idle work now instead of waiting out the 10s timer.
+await fireIdleDebounce();
 
 console.log(JSON.stringify({ calls }));
 `;
 
   writeFileSync(scriptPath, script);
   const result = Bun.spawnSync({
+    env: { ...process.env },
     cmd: [process.execPath, scriptPath],
     stdout: "pipe",
     stderr: "pipe",
@@ -171,42 +178,40 @@ describe("profile learning trigger on session.idle", () => {
 
     expect([result.exitCode, result.stderr]).toEqual([0, ""]);
     expect(result.calls).toEqual(["capture", "learn"]);
-  }, 30_000);
+  });
 
   it("learns when the web server is disabled entirely", () => {
-    // Regression guard: with no web server there is no owner at all, so gating
-    // learning on ownership disabled profile learning permanently.
     const result = runIdleScenario({ webServerEnabled: false });
 
     expect([result.exitCode, result.stderr]).toEqual([0, ""]);
     expect(result.calls).toEqual(["capture", "learn"]);
-  }, 30_000);
+  });
 
   it("keeps retention cleanup owner-only", () => {
     const result = runIdleScenario({ owner: true });
 
     expect([result.exitCode, result.stderr]).toEqual([0, ""]);
     expect(result.calls).toEqual(["capture", "learn", "cleanup"]);
-  }, 30_000);
+  });
 
   it("runs no cleanup on a non-owner", () => {
     const result = runIdleScenario({ owner: false });
 
     expect([result.exitCode, result.stderr]).toEqual([0, ""]);
     expect(result.calls).not.toContain("cleanup");
-  }, 30_000);
+  });
 
   it("skips the plugin's own internal capture sessions", () => {
     const result = runIdleScenario({ internalSession: true });
 
     expect([result.exitCode, result.stderr]).toEqual([0, ""]);
     expect(result.calls).toEqual([]);
-  }, 30_000);
+  });
 
   it("does nothing when auto-capture is disabled", () => {
     const result = runIdleScenario({ autoCaptureEnabled: false });
 
     expect([result.exitCode, result.stderr]).toEqual([0, ""]);
     expect(result.calls).toEqual([]);
-  }, 30_000);
+  });
 });
