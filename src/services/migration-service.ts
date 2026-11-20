@@ -195,7 +195,6 @@ export class MigrationService {
     startTime: number,
     heartbeat: () => void
   ): Promise<MigrationResult> {
-    // Warmup (ONNX load / remote probes) can outlast a single lease window.
     heartbeat();
     await embeddingService.warmup();
     heartbeat();

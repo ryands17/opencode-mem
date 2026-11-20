@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import {
   OpenAIChatCompletionProvider,
   isStreamRequiredError,
@@ -65,33 +65,53 @@ function makeTestableProvider(config: Record<string, unknown> = {}) {
   );
 }
 
-function makeFetch(response: {
-  ok?: boolean;
-  status?: number;
-  statusText?: string;
-  body?: unknown;
-}) {
-  const textBody =
-    typeof response.body === "string" ? response.body : JSON.stringify(response.body ?? "error");
-  const jsonBody = typeof response.body === "string" ? {} : (response.body ?? {});
-  return (async (_input: RequestInfo | URL, _init?: RequestInit) => {
-    return {
-      ok: response.ok ?? false,
-      status: response.status ?? 400,
-      statusText: response.statusText ?? "Bad Request",
-      text: async () => textBody,
-      json: async () => jsonBody,
-    } as Response;
-  }) as typeof fetch;
+type RecordedRequest = {
+  url: string;
+  path: string;
+  method: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+};
+
+function makeServer(
+  respond: (request: RecordedRequest, index: number) => Response | Promise<Response>
+) {
+  const requests: RecordedRequest[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = JSON.parse((await req.text()) || "{}") as Record<string, unknown>;
+      const request: RecordedRequest = {
+        url: req.url,
+        path: new URL(req.url).pathname,
+        method: req.method,
+        headers: Object.fromEntries(req.headers.entries()),
+        body,
+      };
+      requests.push(request);
+      return respond(request, requests.length - 1);
+    },
+  });
+  return { server, requests, url: String(server.url) };
+}
+
+function sseResponse(lines: string[]) {
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder();
+      for (const line of lines) {
+        controller.enqueue(encoder.encode(`${line}\n`));
+      }
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
 }
 
 describe("OpenAIChatCompletionProvider", () => {
-  const originalFetch = globalThis.fetch;
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
   it("getProviderName returns openai-chat", () => {
     expect(makeProvider().getProviderName()).toBe("openai-chat");
   });
@@ -194,186 +214,194 @@ describe("OpenAIChatCompletionProvider", () => {
   });
 
   it("uses custom apiUrl for the request", async () => {
-    let capturedUrl = "";
-    globalThis.fetch = (async (input: RequestInfo | URL, _init?: RequestInit) => {
-      capturedUrl = String(input);
-      return { ok: false, status: 400, statusText: "Bad", text: async () => "err" } as Response;
-    }) as typeof fetch;
+    const { server, url, requests } = makeServer(() => new Response("err", { status: 400 }));
+    try {
+      await makeProvider({ apiUrl: `${url}v1` }).executeToolCall(
+        "system",
+        "user",
+        toolSchema,
+        "session-id"
+      );
 
-    await makeProvider({ apiUrl: "https://compatible.example.com/v1" }).executeToolCall(
-      "system",
-      "user",
-      toolSchema,
-      "session-id"
-    );
-
-    expect(capturedUrl).toBe("https://compatible.example.com/v1/chat/completions");
+      expect(requests[0]?.path).toBe("/v1/chat/completions");
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("sends Authorization Bearer header", async () => {
-    let capturedHeaders: Record<string, string> | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      capturedHeaders = init?.headers as Record<string, string>;
-      return { ok: false, status: 400, statusText: "Bad", text: async () => "err" } as Response;
-    }) as typeof fetch;
+    const { server, url, requests } = makeServer(() => new Response("err", { status: 400 }));
+    try {
+      await makeProvider({ apiKey: "sk-mykey", apiUrl: url }).executeToolCall(
+        "system",
+        "user",
+        toolSchema,
+        "session-id"
+      );
 
-    await makeProvider({ apiKey: "sk-mykey", apiUrl: "https://api.openai.com/v1" }).executeToolCall(
-      "system",
-      "user",
-      toolSchema,
-      "session-id"
-    );
-
-    expect(capturedHeaders?.Authorization).toBe("Bearer sk-mykey");
+      expect(requests[0]?.headers["authorization"]).toBe("Bearer sk-mykey");
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("omits Authorization header when apiKey is not set", async () => {
-    let capturedHeaders: Record<string, string> | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      capturedHeaders = init?.headers as Record<string, string>;
-      return { ok: false, status: 400, statusText: "Bad", text: async () => "err" } as Response;
-    }) as typeof fetch;
+    const { server, url, requests } = makeServer(() => new Response("err", { status: 400 }));
+    try {
+      await makeProvider({ apiKey: undefined, apiUrl: url }).executeToolCall(
+        "system",
+        "user",
+        toolSchema,
+        "session-id"
+      );
 
-    await makeProvider({ apiKey: undefined, apiUrl: "https://api.openai.com/v1" }).executeToolCall(
-      "system",
-      "user",
-      toolSchema,
-      "session-id"
-    );
-
-    expect(capturedHeaders?.Authorization).toBeUndefined();
+      expect(requests[0]?.headers["authorization"]).toBeUndefined();
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("sends model, messages, tools, tool_choice in request body", async () => {
-    let capturedBody: Record<string, unknown> | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      capturedBody = JSON.parse(String(init?.body ?? "{}"));
-      return { ok: false, status: 400, statusText: "Bad", text: async () => "err" } as Response;
-    }) as typeof fetch;
+    const { server, url, requests } = makeServer(() => new Response("err", { status: 400 }));
+    try {
+      await makeProvider({
+        model: "gpt-4o-mini",
+        apiUrl: url,
+      }).executeToolCall("system", "user", toolSchema, "session-id");
 
-    await makeProvider({
-      model: "gpt-4o-mini",
-      apiUrl: "https://api.openai.com/v1",
-    }).executeToolCall("system", "user", toolSchema, "session-id");
-
-    expect(capturedBody?.model).toBe("gpt-4o-mini");
-    expect(Array.isArray(capturedBody?.messages)).toBe(true);
-    expect(Array.isArray(capturedBody?.tools)).toBe(true);
-    expect(capturedBody?.tool_choice).toBe("required");
+      const capturedBody = requests[0]?.body;
+      expect(capturedBody?.model).toBe("gpt-4o-mini");
+      expect(Array.isArray(capturedBody?.messages)).toBe(true);
+      expect(Array.isArray(capturedBody?.tools)).toBe(true);
+      expect(capturedBody?.tool_choice).toBe("required");
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("includes temperature 0.3 by default", async () => {
-    let capturedBody: Record<string, unknown> | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      capturedBody = JSON.parse(String(init?.body ?? "{}"));
-      return { ok: false, status: 400, statusText: "Bad", text: async () => "err" } as Response;
-    }) as typeof fetch;
+    const { server, url, requests } = makeServer(() => new Response("err", { status: 400 }));
+    try {
+      await makeProvider({ apiUrl: url }).executeToolCall(
+        "system",
+        "user",
+        toolSchema,
+        "session-id"
+      );
 
-    await makeProvider({ apiUrl: "https://api.openai.com/v1" }).executeToolCall(
-      "system",
-      "user",
-      toolSchema,
-      "session-id"
-    );
-
-    expect(capturedBody?.temperature).toBe(0.3);
+      expect(requests[0]?.body.temperature).toBe(0.3);
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("omits temperature when memoryTemperature is false", async () => {
-    let capturedBody: Record<string, unknown> | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      capturedBody = JSON.parse(String(init?.body ?? "{}"));
-      return { ok: false, status: 400, statusText: "Bad", text: async () => "err" } as Response;
-    }) as typeof fetch;
+    const { server, url, requests } = makeServer(() => new Response("err", { status: 400 }));
+    try {
+      await makeProvider({
+        memoryTemperature: false,
+        apiUrl: url,
+      }).executeToolCall("system", "user", toolSchema, "session-id");
 
-    await makeProvider({
-      memoryTemperature: false,
-      apiUrl: "https://api.openai.com/v1",
-    }).executeToolCall("system", "user", toolSchema, "session-id");
-
-    expect(capturedBody?.temperature).toBeUndefined();
+      expect(requests[0]?.body.temperature).toBeUndefined();
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("returns success: false with error message on API error response", async () => {
-    globalThis.fetch = makeFetch({ ok: false, status: 401, body: "Unauthorized" });
+    const { server, url } = makeServer(() => new Response("Unauthorized", { status: 401 }));
+    try {
+      const result = await makeProvider({ apiUrl: url }).executeToolCall(
+        "system",
+        "user",
+        toolSchema,
+        "session-id"
+      );
 
-    const result = await makeProvider({ apiUrl: "https://api.openai.com/v1" }).executeToolCall(
-      "system",
-      "user",
-      toolSchema,
-      "session-id"
-    );
-
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("401");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("401");
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("returns friendly message on temperature unsupported error", async () => {
-    globalThis.fetch = makeFetch({
-      ok: false,
-      status: 400,
-      body: '{"error": {"type": "unsupported_value", "param": "temperature"}}',
-    });
-
-    const result = await makeProvider({ apiUrl: "https://api.openai.com/v1" }).executeToolCall(
-      "system",
-      "user",
-      toolSchema,
-      "session-id"
+    const { server, url } = makeServer(
+      () =>
+        new Response('{"error": {"type": "unsupported_value", "param": "temperature"}}', {
+          status: 400,
+        })
     );
+    try {
+      const result = await makeProvider({ apiUrl: url }).executeToolCall(
+        "system",
+        "user",
+        toolSchema,
+        "session-id"
+      );
 
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("memoryTemperature");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("memoryTemperature");
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("returns friendly message when thinking mode rejects tool_choice required", async () => {
-    globalThis.fetch = makeFetch({
-      ok: false,
-      status: 400,
-      body: "Thinking mode does not support this tool_choice",
-    });
-
-    const result = await makeProvider({ apiUrl: "https://api.openai.com/v1" }).executeToolCall(
-      "system",
-      "user",
-      toolSchema,
-      "session-id"
+    const { server, url } = makeServer(
+      () => new Response("Thinking mode does not support this tool_choice", { status: 400 })
     );
+    try {
+      const result = await makeProvider({ apiUrl: url }).executeToolCall(
+        "system",
+        "user",
+        toolSchema,
+        "session-id"
+      );
 
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("forceToolChoice");
-    expect(result.error).toContain("false");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("forceToolChoice");
+      expect(result.error).toContain("false");
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("returns success: false when response has no choices", async () => {
-    globalThis.fetch = makeFetch({ ok: true, body: { choices: [] } } as any);
+    const { server, url } = makeServer(() => Response.json({ choices: [] }));
+    try {
+      const result = await makeProvider({ apiUrl: url }).executeToolCall(
+        "system",
+        "user",
+        toolSchema,
+        "session-id"
+      );
 
-    const result = await makeProvider({ apiUrl: "https://api.openai.com/v1" }).executeToolCall(
-      "system",
-      "user",
-      toolSchema,
-      "session-id"
-    );
-
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("Invalid API response format");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid API response format");
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("returns success: false when API returns error in response body", async () => {
-    globalThis.fetch = makeFetch({
-      ok: true,
-      body: { status: "error", msg: "quota exceeded" },
-    } as any);
-
-    const result = await makeProvider({ apiUrl: "https://api.openai.com/v1" }).executeToolCall(
-      "system",
-      "user",
-      toolSchema,
-      "session-id"
+    const { server, url } = makeServer(() =>
+      Response.json({ status: "error", msg: "quota exceeded" })
     );
+    try {
+      const result = await makeProvider({ apiUrl: url }).executeToolCall(
+        "system",
+        "user",
+        toolSchema,
+        "session-id"
+      );
 
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("quota exceeded");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("quota exceeded");
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("returns success: true when model calls the correct tool", async () => {
@@ -385,9 +413,8 @@ describe("OpenAIChatCompletionProvider", () => {
       domainKnowledge: [],
     });
 
-    globalThis.fetch = makeFetch({
-      ok: true,
-      body: {
+    const { server, url } = makeServer(() =>
+      Response.json({
         choices: [
           {
             message: {
@@ -402,18 +429,21 @@ describe("OpenAIChatCompletionProvider", () => {
             },
           },
         ],
-      },
-    } as any);
-
-    const result = await makeProvider({ apiUrl: "https://api.openai.com/v1" }).executeToolCall(
-      "system",
-      "user",
-      toolSchema,
-      "session-id"
+      })
     );
+    try {
+      const result = await makeProvider({ apiUrl: url }).executeToolCall(
+        "system",
+        "user",
+        toolSchema,
+        "session-id"
+      );
 
-    expect(result.success).toBe(true);
-    expect(result.iterations).toBe(1);
+      expect(result.success).toBe(true);
+      expect(result.iterations).toBe(1);
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("retries after tool-argument validation failure and succeeds on next attempt", async () => {
@@ -465,64 +495,56 @@ describe("OpenAIChatCompletionProvider", () => {
       },
     ];
 
-    let callCount = 0;
-    const requestBodies: Array<{ messages?: Array<{ role?: string; content?: string }> }> = [];
-
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body ?? "{}"));
-      requestBodies.push(body);
-      const responseBody = responses[callCount] ?? responses[responses.length - 1];
-      callCount++;
-      return {
-        ok: true,
-        status: 200,
-        statusText: "OK",
-        text: async () => JSON.stringify(responseBody),
-        json: async () => responseBody,
-      } as Response;
-    }) as typeof fetch;
-
-    const result = await makeProvider({
-      maxIterations: 3,
-      apiUrl: "https://api.openai.com/v1",
-    }).executeToolCall("system", "user", toolSchema, "session-id");
-
-    expect(result.success).toBe(true);
-    expect(result.iterations).toBe(2);
-    expect(callCount).toBe(2);
-
-    const secondMessages = requestBodies[1]?.messages ?? [];
-    const retryFeedback = secondMessages.some(
-      (msg) =>
-        typeof msg.content === "string" &&
-        (msg.content.includes("Validation failed") ||
-          msg.content.includes("workflows must be an array"))
+    const { server, url, requests } = makeServer((_request, index) =>
+      Response.json(responses[index] ?? responses[responses.length - 1])
     );
-    expect(retryFeedback).toBe(true);
+    try {
+      const result = await makeProvider({
+        maxIterations: 3,
+        apiUrl: url,
+      }).executeToolCall("system", "user", toolSchema, "session-id");
+
+      expect(result.success).toBe(true);
+      expect(result.iterations).toBe(2);
+      expect(requests.length).toBe(2);
+
+      const secondMessages =
+        (requests[1]?.body.messages as Array<{ role?: string; content?: string }>) ?? [];
+      const retryFeedback = secondMessages.some(
+        (msg) =>
+          typeof msg.content === "string" &&
+          (msg.content.includes("Validation failed") ||
+            msg.content.includes("workflows must be an array"))
+      );
+      expect(retryFeedback).toBe(true);
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("returns success: false after max iterations with no tool call", async () => {
-    globalThis.fetch = makeFetch({
-      ok: true,
-      body: {
+    const { server, url } = makeServer(() =>
+      Response.json({
         choices: [{ message: { content: "I will not use a tool", tool_calls: undefined } }],
-      },
-    } as any);
+      })
+    );
+    try {
+      const result = await makeProvider({
+        maxIterations: 2,
+        apiUrl: url,
+      }).executeToolCall("system", "user", toolSchema, "session-id");
 
-    const result = await makeProvider({
-      maxIterations: 2,
-      apiUrl: "https://api.openai.com/v1",
-    }).executeToolCall("system", "user", toolSchema, "session-id");
-
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("Max iterations");
-    expect(result.iterations).toBe(2);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Max iterations");
+      expect(result.iterations).toBe(2);
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("returns success: false when model calls wrong tool name", async () => {
-    globalThis.fetch = makeFetch({
-      ok: true,
-      body: {
+    const { server, url } = makeServer(() =>
+      Response.json({
         choices: [
           {
             message: {
@@ -537,89 +559,82 @@ describe("OpenAIChatCompletionProvider", () => {
             },
           },
         ],
-      },
-    } as any);
+      })
+    );
+    try {
+      const result = await makeProvider({
+        maxIterations: 1,
+        apiUrl: url,
+      }).executeToolCall("system", "user", toolSchema, "session-id");
 
-    const result = await makeProvider({
-      maxIterations: 1,
-      apiUrl: "https://api.openai.com/v1",
-    }).executeToolCall("system", "user", toolSchema, "session-id");
-
-    expect(result.success).toBe(false);
+      expect(result.success).toBe(false);
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("defaults to tool_choice=required so models cannot answer with prose", async () => {
-    let sentBody: any;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      sentBody = JSON.parse(String(init?.body));
-      return {
-        ok: true,
-        status: 200,
-        statusText: "OK",
-        text: async () => "",
-        json: async () => ({
-          choices: [
-            {
-              message: {
-                content: null,
-                tool_calls: [
-                  {
-                    id: "call-1",
-                    type: "function",
-                    function: { name: "save_memories", arguments: "{}" },
-                  },
-                ],
-              },
+    const { server, url, requests } = makeServer(() =>
+      Response.json({
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: "call-1",
+                  type: "function",
+                  function: { name: "save_memories", arguments: "{}" },
+                },
+              ],
             },
-          ],
-        }),
-      } as Response;
-    }) as typeof fetch;
-
-    await makeProvider({ apiUrl: "https://api.openai.com/v1" }).executeToolCall(
-      "system",
-      "user",
-      toolSchema,
-      "session-id"
+          },
+        ],
+      })
     );
+    try {
+      await makeProvider({ apiUrl: url }).executeToolCall(
+        "system",
+        "user",
+        toolSchema,
+        "session-id"
+      );
 
-    expect(sentBody.tool_choice).toBe("required");
+      expect(requests[0]?.body.tool_choice).toBe("required");
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("honors forceToolChoice=false to fall back to tool_choice=auto", async () => {
-    let sentBody: any;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      sentBody = JSON.parse(String(init?.body));
-      return {
-        ok: true,
-        status: 200,
-        statusText: "OK",
-        text: async () => "",
-        json: async () => ({
-          choices: [
-            {
-              message: {
-                content: null,
-                tool_calls: [
-                  {
-                    id: "call-1",
-                    type: "function",
-                    function: { name: "save_memories", arguments: "{}" },
-                  },
-                ],
-              },
+    const { server, url, requests } = makeServer(() =>
+      Response.json({
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: "call-1",
+                  type: "function",
+                  function: { name: "save_memories", arguments: "{}" },
+                },
+              ],
             },
-          ],
-        }),
-      } as Response;
-    }) as typeof fetch;
+          },
+        ],
+      })
+    );
+    try {
+      await makeProvider({
+        apiUrl: url,
+        forceToolChoice: false,
+      }).executeToolCall("system", "user", toolSchema, "session-id");
 
-    await makeProvider({
-      apiUrl: "https://api.openai.com/v1",
-      forceToolChoice: false,
-    }).executeToolCall("system", "user", toolSchema, "session-id");
-
-    expect(sentBody.tool_choice).toBe("auto");
+      expect(requests[0]?.body.tool_choice).toBe("auto");
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("detects non-stream-required API errors", () => {
@@ -697,7 +712,6 @@ describe("OpenAIChatCompletionProvider", () => {
       codingStyle: {},
       domainKnowledge: [],
     });
-    const requestBodies: Array<Record<string, unknown>> = [];
     const sse = [
       `data: ${JSON.stringify({
         choices: [
@@ -717,43 +731,27 @@ describe("OpenAIChatCompletionProvider", () => {
         ],
       })}`,
       "data: [DONE]",
-    ].join("\n");
+    ];
 
-    let callCount = 0;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body ?? "{}"));
-      requestBodies.push(body);
-      callCount++;
-      if (callCount === 1) {
-        return {
-          ok: false,
-          status: 400,
-          statusText: "Bad Request",
-          text: async () => "Non-stream chat request is currently not supported",
-          json: async () => ({}),
-        } as Response;
-      }
-      return {
-        ok: true,
-        status: 200,
-        statusText: "OK",
-        text: async () => sse,
-        json: async () => {
-          throw new Error("streaming response has no JSON body");
-        },
-      } as Response;
-    }) as typeof fetch;
-
-    const result = await makeProvider({ apiUrl: "https://api.example.com/v1" }).executeToolCall(
-      "system",
-      "user",
-      toolSchema,
-      "session-id"
+    const { server, url, requests } = makeServer((_request, index) =>
+      index === 0
+        ? new Response("Non-stream chat request is currently not supported", { status: 400 })
+        : sseResponse(sse)
     );
+    try {
+      const result = await makeProvider({ apiUrl: url }).executeToolCall(
+        "system",
+        "user",
+        toolSchema,
+        "session-id"
+      );
 
-    expect(result.success).toBe(true);
-    expect(callCount).toBe(2);
-    expect(requestBodies[0]?.stream).toBeUndefined();
-    expect(requestBodies[1]?.stream).toBe(true);
+      expect(result.success).toBe(true);
+      expect(requests.length).toBe(2);
+      expect(requests[0]?.body.stream).toBeUndefined();
+      expect(requests[1]?.body.stream).toBe(true);
+    } finally {
+      server.stop(true);
+    }
   });
 });

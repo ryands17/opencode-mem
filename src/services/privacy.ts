@@ -1,7 +1,5 @@
 const REDACTED = "[REDACTED]";
 
-// `<private>` / `</private>`, case-insensitive, tolerating whitespace inside the
-// tag (`<private >`) the way an XML parser would.
 const PRIVATE_TAG = /<(\/?)private\s*>/gi;
 
 /**
@@ -49,7 +47,6 @@ export function stripPrivateContent(content: string): string {
     }
 
     if (depth === 0) {
-      // Stray closing tag: emit the text before it, drop the tag itself.
       result += content.slice(cursor, match.index);
       cursor = PRIVATE_TAG.lastIndex;
       continue;
@@ -63,7 +60,6 @@ export function stripPrivateContent(content: string): string {
   }
 
   if (depth > 0) {
-    // Unclosed region: everything from the opening tag onward stays private.
     return result + REDACTED;
   }
 
@@ -79,11 +75,7 @@ export function isFullyPrivate(content: string): boolean {
   return stripped === REDACTED || stripped === "";
 }
 
-// Deliberately recognizable formats, not an entropy detector: commit hashes,
-// checksums, UUIDs and opaque application IDs are useful memory context.
 const CREDENTIAL_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
-  // GitHub now also issues stateless ghs_APPID_JWT installation tokens:
-  // https://github.blog/changelog/2026-04-24-notice-about-upcoming-new-format-for-github-app-installation-tokens/
   [
     /(?<![\w-])ghs_[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?![\w-])/g,
     "github-token",
@@ -98,13 +90,6 @@ const CREDENTIAL_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
   [/(?<![\w])(?:AKIA|ASIA)[A-Z0-9]{16}(?![\w])/g, "aws-access-key"],
 ];
 
-// Keep the authorization scheme, key name and surrounding syntax useful. Do
-// not consume expressions (process.env.KEY, ${KEY}, config.key), ordinary code
-// identifiers or common placeholders. Require letters and at least four digits
-// in quoted literals or uppercase environment assignments. Bare lowercase
-// values can be code references or YAML literals, so leave them ambiguous.
-// Custom/short/all-letter secrets are not
-// inferred; callers can use <private> for values without a recognizable shape.
 const CREDENTIAL_KEY_NAME = String.raw`(?:[\w]+[_-])?(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key|password|passwd)`;
 const CREDENTIAL_KEY = new RegExp(`^${CREDENTIAL_KEY_NAME}$`, "i");
 const CREDENTIAL_ASSIGNMENT = new RegExp(
@@ -126,9 +111,7 @@ function isCredentialLiteral(value: string): boolean {
 const BEARER = /\b(Bearer[ \t]+)([A-Za-z0-9._~+/-]{12,}=*)(?![\w.~+/-])/gi;
 
 function redactPrivateKeys(content: string): string {
-  // A recognizable opener without a matching end marker fails closed to EOF,
-  // including a truncated opener missing its final dashes. Never retain a key
-  // body merely because capture was bounded or the user pasted malformed PEM.
+  // WARNING: an opener with no end marker must fail closed to EOF; never retain a key body from malformed or truncated PEM.
   const opener = /-----BEGIN ((?:[A-Z0-9]+ )?PRIVATE KEY)(?:-----)?/g;
   let result = "";
   let cursor = 0;

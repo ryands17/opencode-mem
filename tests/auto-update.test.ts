@@ -193,8 +193,6 @@ describe("auto-update checkAutoUpdate", () => {
     try {
       const result = await checkAutoUpdate(controller.signal);
       expect(typeof result.updated).toBe("boolean");
-      // Workspace installs are not opencode @latest wrappers, so this must not
-      // delete the repo — updated stays false (or true only if somehow wrapped).
       if (result.updated) {
         expect(result.name).toBe("opencode-mem");
       }

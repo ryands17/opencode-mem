@@ -46,7 +46,6 @@ mock.module(moduleUrl("services/tags"), () => ({
     user: { userEmail: "fixture-user@example.com" },
   }),
 }));
-// Record that loadMemoryContext still formats when project memories are empty.
 mock.module(moduleUrl("services/context"), () => ({
   formatContextForPrompt: async (userId, projectMemories) => {
     formatCalls.push({

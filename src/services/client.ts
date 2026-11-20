@@ -110,14 +110,10 @@ export class LocalMemoryClient {
   }
 
   async close(): Promise<void> {
-    // Release one plugin-instance lease. Only the last live instance closes the
-    // process-wide Turso pool — otherwise a disposing session races sibling
-    // idle handlers with "database connection is not open" (#443).
+    // WARNING: only the last live plugin instance may close the process-wide Turso pool; closing it from a disposing session races sibling idle handlers (#443).
     const { releasePluginTurso } = await import("./turso/lifecycle.js");
     const closed = await releasePluginTurso();
     if (closed) {
-      // Process-wide like the pool: only the last instance may drop the model.
-      // Optional: test stubs for embeddingService may omit dispose.
       if (typeof embeddingService.dispose === "function") {
         await embeddingService.dispose("client-close");
       }
@@ -221,8 +217,6 @@ export class LocalMemoryClient {
                 .digest("hex")}`
             : null;
         if (replayId) {
-          // A crash can leave the memory committed before its prompt is marked captured.
-          // Search older rotated shards too, and retain soft deletion as an explicit decision.
           const shards = await tursoShardManager.getAllShards(scope, hash);
           for (const existingShard of shards) {
             const db = await tursoConnectionManager.getConnection(existingShard.dbPath);
@@ -340,8 +334,6 @@ export class LocalMemoryClient {
         return { success: false as const, error: "Memory not found" };
       }
 
-      // Only a supplied content write is in scope; do not rewrite historical
-      // rows merely because another field is edited.
       const newContent = data.content
         ? sanitizeMemoryContent(data.content)
         : String(existingMemory.content);
@@ -444,7 +436,6 @@ export class LocalMemoryClient {
         const memory = await tursoVectorSearch.getMemoryById(db, memoryId);
 
         if (memory) {
-          // Soft-delete into trash (recoverable). Hard-purge happens via cleanup.
           const ok = await tursoVectorSearch.softDeleteVector(db, memoryId, metaPatch);
           return ok ? { success: true } : { success: false, error: "Memory not found" };
         }
@@ -529,8 +520,6 @@ export class LocalMemoryClient {
         allMemories.push(...memories);
       }
 
-      // Match per-shard SQL (is_pinned DESC, created_at DESC) when selecting the
-      // merged limit, then present the chosen rows by recency for injection order.
       allMemories.sort((a, b) => {
         const pinDiff = Number(b.is_pinned ?? 0) - Number(a.is_pinned ?? 0);
         if (pinDiff !== 0) return pinDiff;

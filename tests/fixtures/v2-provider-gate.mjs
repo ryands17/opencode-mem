@@ -1,11 +1,3 @@
-/**
- * Mini subprocess gate proof for Phase2 R1: the connectivity ids produced by
- * the fixed v2 bridge flow through setConnectedProviders → isProviderConnected
- * so an active provider id passes the gate and a disabled one does not.
- *
- * No LLM/generate call is made; module state is loaded in a fresh process
- * with HOME/XDG redirected to an isolated sandbox (no real auth/memory).
- */
 import { createLegacyClient } from "../../src/v2/legacy-client.js";
 import {
   setConnectedProviders,

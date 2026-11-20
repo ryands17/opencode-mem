@@ -1,7 +1,6 @@
 /** Title used for transient structured-output sessions (capture / profile learning). */
 export const INTERNAL_CAPTURE_SESSION_TITLE = "opencode-mem capture";
 
-/** Grace period so session.idle can still match after best-effort delete. */
 const UNTRACK_GRACE_MS = 60_000;
 
 const trackedSessionIDs = new Set<string>();

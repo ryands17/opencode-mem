@@ -16,15 +16,12 @@ export function stripJsoncComments(content: string): string {
 
     if (!inSingleLineComment && !inMultiLineComment) {
       if (char === '"') {
-        // Count consecutive backslashes before this quote
         let backslashCount = 0;
         let j = i - 1;
         while (j >= 0 && content[j] === "\\") {
           backslashCount++;
           j--;
         }
-        // Quote is escaped only if preceded by ODD number of backslashes
-        // e.g., \" = escaped, \\" = not escaped (escaped backslash + quote)
         if (backslashCount % 2 === 0) {
           inString = !inString;
         }
@@ -76,8 +73,6 @@ export function stripJsoncComments(content: string): string {
       continue;
     }
 
-    // Drop structural trailing commas (comma before } or ], allowing
-    // whitespace and comments in between).
     if (char === "," && isTrailingComma(content, i)) {
       i++;
       continue;
@@ -90,7 +85,6 @@ export function stripJsoncComments(content: string): string {
   return result;
 }
 
-/** True when the comma at `commaIndex` is followed only by whitespace/comments then } or ]. */
 function isTrailingComma(content: string, commaIndex: number): boolean {
   let next = commaIndex + 1;
   while (next < content.length) {

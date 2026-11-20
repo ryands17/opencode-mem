@@ -14,12 +14,10 @@
 
   type Props = {
     lang: string;
-    /** Fumadocs-style full trigger in the sidebar, or compact icon for mobile header */
     variant?: "sidebar" | "icon";
   };
   let { lang, variant = "sidebar" }: Props = $props();
 
-  /** Only the sidebar instance owns the dialog + ⌘K listener */
   const ownsDialog = variant === "sidebar";
 
   let open = $state(false);
@@ -52,7 +50,7 @@
   });
 
   $effect(() => {
-    query;
+    void query;
     active = 0;
   });
 

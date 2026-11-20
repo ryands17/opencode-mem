@@ -9,12 +9,7 @@
     label: string;
     class?: string;
     labelClass?: string;
-    /** When false, label sits above the control (composite / non-text fields). */
     floating?: boolean;
-    /**
-     * Current value — pass for selects / whenever CSS `:placeholder-shown` is not enough.
-     * Omit for text inputs/textareas that use an empty `placeholder`.
-     */
     value?: string | null;
     spacing?: "tight" | "normal";
     srOnly?: boolean;

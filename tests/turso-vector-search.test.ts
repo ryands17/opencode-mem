@@ -143,7 +143,6 @@ describe("turso vector search", () => {
     expect(observedSql[1]).toContain("m.container_tag = ?");
   });
 
-  // Large exact-scan + container_tag filter. Explicit timeout for slower CI runners.
   it("ranks exact cosine hits and filters other container tags", async () => {
     baseDir = mkdtempSync(join(tmpdir(), "turso-vector-rank-"));
 
@@ -165,8 +164,6 @@ describe("turso vector search", () => {
       const shard = await tursoShardManager.createShard("project", scopeHash, 0);
       const db = await tursoConnectionManager.getConnection(shard.dbPath);
 
-      // 200 memories across two tags. mem_rank_0 is an exact query match;
-      // every other vector is orthogonal on a different dim.
       const now = Date.now();
       for (let i = 0; i < 200; i++) {
         const vec = new Float32Array(dims);
@@ -191,12 +188,10 @@ describe("turso vector search", () => {
       const queryVector = new Float32Array(dims);
       queryVector[0] = 1;
 
-      // No queryText: avoids keyword boost; ranking is pure vector similarity.
       const results = await tursoVectorSearch.searchInShard(shard, queryVector, targetTag, 10);
 
       expect(results.length).toBeGreaterThan(0);
       expect(results[0]?.id).toBe("mem_rank_0");
-      // Hybrid score is 0.6*content + 0.4*tags; tags_vector is null → ~0.6 for exact hit.
       expect(results[0]?.similarity).toBeGreaterThan(0.55);
       for (const r of results) {
         const idx = Number(r.id.replace("mem_rank_", ""));
@@ -206,7 +201,7 @@ describe("turso vector search", () => {
     } finally {
       CONFIG.storagePath = previousStoragePath;
     }
-  }, 60000);
+  });
 
   it("boosts keyword matches in hybrid ranking and indexes session_id", async () => {
     baseDir = mkdtempSync(join(tmpdir(), "turso-hybrid-session-"));
@@ -272,7 +267,6 @@ describe("turso vector search", () => {
       const vectorHit = hybrid.find((r) => r.id === "mem_vec");
       expect(keywordHit).toBeTruthy();
       expect(vectorHit).toBeTruthy();
-      // Keyword hybrid weight should keep the text match competitive.
       expect(keywordHit!.similarity).toBeGreaterThan(0.1);
     } finally {
       CONFIG.storagePath = previousStoragePath;

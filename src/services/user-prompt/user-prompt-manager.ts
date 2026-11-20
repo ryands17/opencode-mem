@@ -63,8 +63,6 @@ export class UserPromptManager {
 
   private async ready(): Promise<TursoDb> {
     await this.initialize();
-    // Connection manager is authoritative: another plugin instance's dispose
-    // may close/replace the pooled handle underneath a cached TursoDb (#443).
     if (this.db) {
       const current = await tursoConnectionManager.getConnection(this.dbPath);
       if (current === this.db) {
@@ -159,7 +157,6 @@ export class UserPromptManager {
     return db.transaction("write", async (tx) => {
       await this.pruneCaptureEvidence(tx);
       if (isFullyPrivate(sanitized)) {
-        // A redacted replacement must not leave the previous version replayable.
         await tx.run(
           `DELETE FROM pending_capture_evidence WHERE prompt_id = ? AND part_key = ?
           AND EXISTS (SELECT 1 FROM user_prompts WHERE id = ? AND captured IN (0, 2)
@@ -179,7 +176,6 @@ export class UserPromptManager {
         [partKey, bounded, Date.now(), promptId, projectPath.replace(/\\/g, "/")]
       );
       if (!changed) return false;
-      // Retain the most recently updated parts. Ties are deterministic across restarts.
       await tx.run(
         `DELETE FROM pending_capture_evidence WHERE prompt_id = ? AND part_key IN (
         SELECT part_key FROM pending_capture_evidence WHERE prompt_id = ?
@@ -460,7 +456,6 @@ export class UserPromptManager {
       return { deleted, linkedMemoryIds };
     } catch (error) {
       if (!isIdxDeleteMismatchError(error)) throw error;
-      // Batch DELETE hit a desynced index entry; fall back to per-row deletes.
       log("deleteOldPrompts: IdxDelete on batch, falling back to per-row deletes", {
         error: String(error),
       });

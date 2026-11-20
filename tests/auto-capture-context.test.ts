@@ -42,7 +42,6 @@ describe("buildMarkdownContext budgeting (#232)", () => {
 
     expect(utf8ByteLength(context)).toBeLessThanOrEqual(maxBytes);
     expect(context).toContain("NEW-");
-    // Older content may be dropped entirely once the newest turn fills the budget.
     expect(context.includes("OLD-") && !context.includes("NEW-")).toBe(false);
   });
 

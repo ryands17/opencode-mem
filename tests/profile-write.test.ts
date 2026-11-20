@@ -1,15 +1,9 @@
-/**
- * Tests for explicit user preference writes via UserProfileManager.
- * Exercises the write path added to src/index.ts `profile` mode
- * by testing the underlying manager directly (no live plugin context needed).
- */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tursoConnectionManager } from "../src/services/turso/connection-manager.js";
 
-// All tests share one sqld database, so use a fresh user id per test.
 let tmpDir: string;
 let userId: string;
 
@@ -29,12 +23,9 @@ describe("UserProfileManager – explicit preference writes", () => {
 
   afterEach(async () => {
     await tursoConnectionManager.closeAll();
-    await new Promise((r) => setTimeout(r, 100));
     try {
       rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // ignore leftover test files
-    }
+    } catch {}
   });
 
   it("creates a profile with an explicit preference when none exists", async () => {
@@ -74,7 +65,6 @@ describe("UserProfileManager – explicit preference writes", () => {
   it("merges a new explicit preference into an existing profile without clobbering other prefs", async () => {
     const mgr = await makeManager();
 
-    // Seed with one AI-learned preference
     await mgr.createProfile(
       userId,
       "Test User",
@@ -153,7 +143,6 @@ describe("UserProfileManager – explicit preference writes", () => {
       0
     );
 
-    // Write the same preference again (simulates calling profile+content twice)
     const p1 = await mgr.getActiveProfile(userId)!;
     const d1 = JSON.parse(p1.profileData);
     const merged = await mgr.mergeProfileData(d1, {
@@ -163,9 +152,7 @@ describe("UserProfileManager – explicit preference writes", () => {
 
     const p2 = await mgr.getActiveProfile(userId)!;
     const d2 = JSON.parse(p2.profileData);
-    // Still only one entry (deduplicated by category+description)
     expect(d2.preferences.filter((p: any) => p.description === description)).toHaveLength(1);
-    // Confidence capped at 1.0 (bumped by 0.1 but clamped)
     const conf = d2.preferences.find((p: any) => p.description === description)!.confidence;
     expect(conf).toBeLessThanOrEqual(1.0);
     expect(conf).toBeGreaterThan(0.6);

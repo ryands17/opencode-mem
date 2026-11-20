@@ -15,10 +15,7 @@ async function makeManager() {
   return { mgr: new UserProfileManager(), CONFIG };
 }
 
-// Embedding not warmed up → mergeItems buffers non-explicit items (cold start).
 const coldEmbed = { isWarmedUp: false } as any;
-// Warmed up → buffered items drain into the merge. embed() is only used to seed a
-// centroid on append; existing is empty here so no cosine comparison runs.
 const warmEmbed = {
   isWarmedUp: true,
   embed: async () => new Float32Array(8).fill(0.25),
@@ -33,18 +30,14 @@ describe("cold buffer per-user isolation (correctness #1)", () => {
 
   afterEach(async () => {
     await tursoConnectionManager.closeAll();
-    await new Promise((r) => setTimeout(r, 50));
     try {
       rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // ignore leftover test files
-    }
+    } catch {}
   });
 
   it("does not drain one user's buffered items into another user's merge", async () => {
     const { mgr } = await makeManager();
 
-    // Cold start: each user's observation is buffered under its own profileId.
     await mgr.mergeProfileData(
       empty(),
       { preferences: [{ category: "style", description: "A prefers tabs over spaces" }] },
@@ -58,7 +51,6 @@ describe("cold buffer per-user isolation (correctness #1)", () => {
       "profile_B"
     );
 
-    // Warm merge for B must drain only B's bucket, never A's.
     const mergedB = await mgr.mergeProfileData(
       empty(),
       { preferences: [] },
@@ -69,7 +61,6 @@ describe("cold buffer per-user isolation (correctness #1)", () => {
     expect(descsB).toContain("B prefers spaces over tabs");
     expect(descsB).not.toContain("A prefers tabs over spaces");
 
-    // A's bucket is untouched by B's drain and drains only for A.
     const mergedA = await mgr.mergeProfileData(
       empty(),
       { preferences: [] },

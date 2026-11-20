@@ -2,7 +2,7 @@ export const ROUTES = {
   home: "/",
   project: "/project-memories",
   profile: "/user-profile",
-  // Keep off `/skills` — that prefix serves the OpenCode HTTP skill catalog.
+  // WARNING: Keep off "/skills" — that prefix serves the OpenCode HTTP skill catalog.
   skills: "/skill-library",
   markdown: "/markdown-vault",
   stats: "/stats",

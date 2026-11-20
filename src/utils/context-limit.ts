@@ -13,12 +13,10 @@ export function sliceUtf8Bytes(text: string, start: number, end?: number): strin
   let to = Math.min(bytes.length, end ?? bytes.length);
   if (to <= from) return "";
 
-  // If `from` lands inside a multi-byte character, advance to the next lead byte.
   while (from < to && (bytes[from]! & 0xc0) === 0x80) {
     from++;
   }
 
-  // If `to` lands inside a multi-byte character, back up to that character's start.
   while (to > from && (bytes[to]! & 0xc0) === 0x80) {
     to--;
   }

@@ -34,9 +34,7 @@ export function getOrCreateAuthToken(): string {
   if (platform() !== "win32") {
     try {
       chmodSync(TOKEN_FILE, 0o600);
-    } catch {
-      // best-effort; file was already created with mode 0o600 above
-    }
+    } catch {}
   }
   cachedToken = token;
   return cachedToken;

@@ -1,13 +1,5 @@
 #!/usr/bin/env bun
-/**
- * Plugin build: transpiles the src tree into dist, one file at a time.
- *
- * `bun build --no-bundle` mirrors the old tsc emit exactly (dist keeps the same
- * tree as src), which the package exports map, tests, and import.meta-based
- * path resolution all depend on. The --dts flag is a silent no-op on Bun
- * versions without declaration emit, and emits .d.ts files alongside the
- * JavaScript once the installed Bun supports it for no-bundle builds.
- */
+// WARNING: dist must mirror the src tree -- the package exports map, tests, and import.meta-based path resolution all depend on it; --dts is a silent no-op on Bun versions without declaration emit.
 import { rmSync } from "node:fs";
 import { Glob } from "bun";
 

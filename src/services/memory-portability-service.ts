@@ -32,6 +32,17 @@ import type { MemoryRecord } from "./turso/types.js";
 import { stripPrivateContent, isFullyPrivate } from "./privacy.js";
 import { log } from "./logger.js";
 
+function importInjectionHook(phase: "pre-commit" | "post-count" | "fail-count"): void {
+  if (process.env.OPENCODE_MEM_IMPORT_HOOKS !== phase) return;
+  if (phase === "fail-count") {
+    throw new Error("ordinary metadata failure");
+  }
+  writeFileSync(
+    join(CONFIG.storagePath, ".turso-operation.lock"),
+    JSON.stringify({ id: "takeover", pid: process.pid, timestamp: new Date().toISOString() })
+  );
+}
+
 function getPluginVersion(): string {
   try {
     const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "../../package.json");
@@ -162,7 +173,6 @@ export class MemoryPortabilityService {
       memories,
     };
 
-    // Validate before writing so we never emit invalid documents.
     MemoryExportDocumentSchema.parse(document);
 
     mkdirSync(dirname(outputPath), { recursive: true });
@@ -174,9 +184,7 @@ export class MemoryPortabilityService {
       if (existsSync(tmpPath)) {
         try {
           unlinkSync(tmpPath);
-        } catch {
-          // ignore cleanup errors
-        }
+        } catch {}
       }
       throw error;
     }
@@ -255,7 +263,6 @@ export class MemoryPortabilityService {
       )
     );
 
-    // Pre-scan for ID conflicts across all project shards of the target.
     const targetShards = await tursoShardManager.getAllShards(scope, hash);
     const rejected: Array<{ id: string; reason: string }> = [];
     const skipped: Array<{ id: string; reason: string }> = [];
@@ -303,7 +310,6 @@ export class MemoryPortabilityService {
     const insertedIds: string[] = [];
 
     try {
-      // Phase A: compute all embeddings before any DB write.
       const prepared: Array<{ record: MemoryRecord; isPinned: boolean }> = [];
       for (const memory of document.memories) {
         const tags = memory.tags ?? [];
@@ -317,13 +323,11 @@ export class MemoryPortabilityService {
               })
             : undefined;
 
-        // Every project shares one sqld database, so an exported id may already
-        // exist in another project. Scope the imported id to this target.
         const importedId = existingIds.has(memory.id) ? `${memory.id}_${hash}` : memory.id;
         existingIds.add(importedId);
 
         const metadata = {
-          ...(memory.metadata ?? {}),
+          ...memory.metadata,
           source: "import",
           importedAt: Date.now(),
           exportSchemaVersion: document.schemaVersion,
@@ -356,8 +360,7 @@ export class MemoryPortabilityService {
         releaseLock.heartbeat();
       }
 
-      // Phase B: single transactional write. Avoid getWriteShard() here because it
-      // refuses writes while our own operation lock is held.
+      // WARNING: getWriteShard() refuses writes while this operation's own lock is held; write through the already-resolved shard instead.
       await tursoShardManager.withScopeWriteLock(scope, hash, async () => {
         let shard = await tursoShardManager.getActiveShard(scope, hash);
         if (!shard) {
@@ -375,14 +378,17 @@ export class MemoryPortabilityService {
               });
             }
             insertedIds.push(item.record.id);
+            importInjectionHook("pre-commit");
             releaseLock.heartbeat();
           }
         });
 
+        importInjectionHook("fail-count");
         await tursoShardManager.setVectorCount(
           shard.id,
           await tursoVectorSearch.countAllVectors(db)
         );
+        importInjectionHook("post-count");
         releaseLock.heartbeat();
       });
 
@@ -427,10 +433,6 @@ export class MemoryPortabilityService {
         containerTag: target.tag,
       };
     } catch (error) {
-      // Best-effort cleanup for ordinary failures only. Ownership loss rolls back
-      // an open transaction, but a successor may already have committed these IDs
-      // (or our transaction may have committed before the final heartbeat).
-      // Never compensate shared rows without current ownership.
       if (!isTursoLockOwnershipLostError(error) && insertedIds.length > 0) {
         try {
           const shards = await tursoShardManager.getAllShards(scope, hash);

@@ -28,7 +28,6 @@ function scenario(oversized: boolean, rewrite = false) {
     rmSync(dir, { recursive: true, force: true });
   }
 }
-// Controlled responses validate wiring, not actual model summarization quality.
 it("persists one controlled outcome from redacted v2 failure and recovery evidence", () => {
   const r = scenario(false);
   expect(r.seen).toHaveLength(1);
@@ -38,13 +37,13 @@ it("persists one controlled outcome from redacted v2 failure and recovery eviden
   expect(r.rows).toHaveLength(1);
   expect(r.rows[0].content).toContain("Deployment remains unverified");
   expect(r.prompt.captured).toBe(true);
-}, 15000);
+});
 it("rejects oversized provider output without persistence or completing the prompt", () => {
   const r = scenario(true);
   expect(r.rows).toHaveLength(0);
   expect(r.prompt.captured).toBe(false);
   expect(r.prompt.capture_attempts).toBe(1);
-}, 15000);
+});
 
 it("falls back to bounded new summary when update-on-capture returns an oversized rewrite", () => {
   const r = scenario(false, true);
@@ -57,4 +56,4 @@ it("falls back to bounded new summary when update-on-capture returns an oversize
   expect(added.content).toContain("Deployment remains unverified");
   expect(Buffer.byteLength(added.content)).toBeLessThanOrEqual(8192);
   expect(r.prompt.captured).toBe(true);
-}, 15000);
+});

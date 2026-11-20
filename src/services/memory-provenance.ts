@@ -1,7 +1,6 @@
 const UNZONED_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const UNZONED_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?$/;
 
-/** Collapse control whitespace so display metadata cannot break Markdown/XML structure. */
 function sanitizeDisplayText(value: string): string {
   let result = "";
   let pendingSpace = false;

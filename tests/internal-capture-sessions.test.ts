@@ -14,7 +14,6 @@ describe("internal capture session tracking", () => {
     trackInternalCaptureSession(id);
     expect(isTrackedInternalCaptureSession(id)).toBe(true);
     untrackInternalCaptureSession(id);
-    // Still tracked during grace window
     expect(isTrackedInternalCaptureSession(id)).toBe(true);
   });
 

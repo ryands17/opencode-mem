@@ -39,12 +39,9 @@ describe("SkillsManager", () => {
 
   afterEach(async () => {
     await tursoConnectionManager.closeAll();
-    await new Promise((r) => setTimeout(r, 50));
     try {
       rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // ignore
-    }
+    } catch {}
   });
 
   it("creates, lists, updates, and deletes skills", async () => {

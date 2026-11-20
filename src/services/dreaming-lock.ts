@@ -4,7 +4,6 @@ import { CONFIG } from "../config.js";
 import { log } from "./logger.js";
 
 const LOCK_FILE = "dreaming.lock";
-/** Treat locks older than this as stale (crashed process). */
 const STALE_MS = 2 * 60 * 60 * 1000;
 
 interface LockPayload {
@@ -50,7 +49,6 @@ export function tryAcquireDreamingLock(): (() => void) | null {
   if (existing) {
     const stale = Date.now() - existing.acquiredAt > STALE_MS;
     const alive = isProcessAlive(existing.pid);
-    // Same pid still counts as held (in-process re-entry must fail too).
     if (!stale && alive) {
       log("dreaming lock: held by another owner", {
         pid: existing.pid,
@@ -60,13 +58,10 @@ export function tryAcquireDreamingLock(): (() => void) | null {
     }
     try {
       unlinkSync(path);
-    } catch {
-      // race: another process may have removed it
-    }
+    } catch {}
   }
 
   try {
-    // wx: fail if recreated between unlink and create
     writeFileSync(path, JSON.stringify(payload), { flag: "wx" });
   } catch {
     log("dreaming lock: lost create race");
@@ -80,8 +75,6 @@ export function tryAcquireDreamingLock(): (() => void) | null {
     try {
       const current = readLock();
       if (current?.pid === process.pid) unlinkSync(path);
-    } catch {
-      // ignore
-    }
+    } catch {}
   };
 }

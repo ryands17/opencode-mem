@@ -11,7 +11,6 @@ describe("markdown backend config", () => {
   });
 
   it("keeps storagePath as a non-empty absolute-ish path", async () => {
-    // Other tests may mutate CONFIG.storagePath; only assert the runtime shape.
     const { CONFIG } = await import("../src/config.js");
     expect(typeof CONFIG.storagePath).toBe("string");
     expect(CONFIG.storagePath.length).toBeGreaterThan(0);

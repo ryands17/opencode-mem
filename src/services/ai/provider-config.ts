@@ -28,9 +28,6 @@ export function buildMemoryProviderConfig(
   const memoryApiKey = config.memoryApiKey;
   const issues: string[] = [];
 
-  // Preset providers fill endpoint/model themselves (and config resolution
-  // materializes those defaults into CONFIG), so memoryModel / memoryApiUrl
-  // are optional there. An API key is always required.
   const isPresetProvider = isMemoryProviderPreset(config.memoryProvider);
 
   if (!memoryModel && !isPresetProvider) issues.push("missing memoryModel");

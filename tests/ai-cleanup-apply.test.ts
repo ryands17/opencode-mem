@@ -67,7 +67,7 @@ describe("mergeCleanupIntoProfile (#237)", () => {
       cleanedData: cleaned,
       includeIds: ["pref_0", "pref_1"],
       acceptedMerged: [],
-      acceptedRemoved: [], // removal rejected
+      acceptedRemoved: [],
       allMerged: [],
       allRemovedIds: ["pref_1"],
       explicitAcceptance: true,
@@ -109,7 +109,7 @@ describe("mergeCleanupIntoProfile (#237)", () => {
       oldProfileData: oldProfile,
       cleanedData: cleaned,
       includeIds: ["pref_0", "pref_1"],
-      acceptedMerged: [], // merge rejected
+      acceptedMerged: [],
       acceptedRemoved: [],
       allMerged: [{ ids: ["pref_0", "pref_1"], result: "target-merged" }],
       allRemovedIds: [],

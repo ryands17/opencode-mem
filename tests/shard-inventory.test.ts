@@ -80,7 +80,6 @@ describe("shard inventory and source resolution", () => {
     expect(byPath.source?.matchedBy).toBe("storedProjectPath");
     expect(byPath.source?.scopeHash).toBe(oldHash);
 
-    // Stored project_path matching still works after the directory is deleted.
     const { rmSync } = await import("node:fs");
     rmSync(oldProjectDir, { recursive: true, force: true });
 

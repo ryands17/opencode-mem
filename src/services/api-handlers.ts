@@ -159,13 +159,7 @@ export async function handleListTags(): Promise<
 > {
   try {
     await ensureTursoReady();
-    // Tags are stored as SQLite metadata; embedding model is not needed.
-    // Calling warmup() here would block on local transformer init in the worker
-    // thread and hang every read API. Only handlers that compute similarity
-    // (e.g. handleSearch) should warm up the embedding service.
-    //
-    // Return both scopes: the unfiltered explorer list and /api/stats total
-    // already include user + project memories, so the tag dropdown must too.
+    // WARNING: never warm up the embedding service in read handlers; model init blocks the worker thread and hangs every read API.
     const [project, user] = await Promise.all([
       collectDistinctTags("project", "_project_"),
       collectDistinctTags("user", "_user_"),
@@ -185,8 +179,6 @@ export async function handleListMemories(
 ): Promise<ApiResponse<PaginatedResponse<Memory | any>>> {
   try {
     await ensureTursoReady();
-    // Listing only reads SQLite rows; no vector ops happen here.
-    // See handleListTags comment - keep embedding init out of read paths.
     const filterTags = (Array.isArray(tag) ? tag : tag ? [tag] : [])
       .map((t) => t.trim())
       .filter(Boolean);
@@ -213,14 +205,6 @@ export async function handleListMemories(
         }
       }
     } else {
-      // Iterate both project- and user-scoped shards. Previously this only
-      // walked project shards, which silently hid user-scope memories from the
-      // listing endpoint (Web UI navigation, /api/memories without a tag
-      // filter, …). User-scope memories still showed up in /api/search and
-      // /api/stats `byType`, but were invisible in /api/stats `byScope` and
-      // unbrowseable in the UI — a confusing UX gap. The filter keeps the
-      // defense-in-depth check on container_tag, just widens it to both
-      // canonical scope markers.
       const projectShards = await tursoShardManager.getAllShards("project", "");
       const userShards = await tursoShardManager.getAllShards("user", "");
       for (const shard of [...projectShards, ...userShards]) {
@@ -305,8 +289,6 @@ export async function handleListMemories(
     const sortedTimeline: any[] = [];
     const pairValues = Array.from(linkedPairs.values());
     const completePairs = pairValues.filter((p) => p.memory && p.prompt);
-    // A memory or prompt whose counterpart is missing (linked prompt deleted,
-    // or prompt capture off) must still show up in the timeline, unlinked.
     for (const pair of pairValues) {
       if (pair.memory && !pair.prompt) standalone.push(pair.memory);
       else if (pair.prompt && !pair.memory) standalone.push(pair.prompt);
@@ -478,8 +460,6 @@ export async function handleDeleteMemory(
       const memory = await tursoVectorSearch.getMemoryById(db, id);
       if (memory) {
         const metadata = safeJSONParse(memory.metadata);
-        // Soft-delete keeps the row in trash (recoverable). Markdown files stay
-        // until hard-purge so restore can re-surface the same note.
         if (cascade) {
           const linkedPromptId = metadata?.promptId;
           if (linkedPromptId) await userPromptManager.deletePrompt(linkedPromptId);
@@ -557,7 +537,6 @@ export async function handleRestoreMemory(id: string): Promise<ApiResponse<{ res
       if (!memory || memory.deleted_at == null) continue;
       const ok = await tursoVectorSearch.restoreVector(db, id);
       if (!ok) return { success: false, error: "Failed to restore memory" };
-      // Clear merge/supersede pointers so the restored row stands alone again.
       const meta = safeJSONParse(memory.metadata) || {};
       let metaChanged = false;
       if (meta.mergedInto) {
@@ -925,16 +904,10 @@ export async function handleStats(
   }>
 > {
   try {
-    // Ownership/liveness probes must stay cheap: auth already ran, do not open
-    // shards or scan logs under the 2s checkServerAvailable timeout.
     if (options.probe) {
       return { success: true };
     }
 
-    // Stats only counts Turso/libSQL rows; no embedding needed.
-    // See handleListTags comment - keep embedding init out of read paths.
-    // Shard listing failures stay hard errors so /api/stats consumers (explorer
-    // header total) never treat an empty total as a successful empty store.
     const memoryShards = await getAllMemoryShards();
     const [shardStats, profile] = await Promise.all([
       collectShardStats(memoryShards),
@@ -1057,8 +1030,6 @@ export async function handleRunDreaming(
   >
 > {
   try {
-    // Manual runs are always allowed. `dreaming.enabled` only gates the
-    // background scheduler (see DreamingService.shouldRun / maybeRun).
     const { dreamingService } = await import("./dreaming-service.js");
     const result = await dreamingService.run(directory);
     return { success: true, data: result };
@@ -1278,7 +1249,6 @@ export async function handleRefreshProfile(userId?: string): Promise<ApiResponse
   }
 }
 
-// Temporary storage for pending AI cleanup results (userId → result)
 const pendingCleanups = new Map<
   string,
   {
@@ -1347,8 +1317,6 @@ export async function handleAICleanup(
     return {
       success: true,
       data: {
-        // Strip embeddings only on the HTTP response; pendingCleanups keeps
-        // full vectors for apply/merge.
         old: toPublicProfileData(profileData),
         new: toPublicProfileData(result.cleaned),
         changes: result.diff,
@@ -1388,7 +1356,6 @@ export function mergeCleanupIntoProfile(args: {
     explicitAcceptance = false,
   } = args;
 
-  // Start from cleaned data, then restore any rejected removals/merges.
   const scopedResult: UserProfileData = {
     preferences: [...cleanedData.preferences],
     patterns: [...cleanedData.patterns],
@@ -1424,12 +1391,10 @@ export function mergeCleanupIntoProfile(args: {
     }
   }
 
-  // Full-profile cleanup: cleaned (+ acceptance) replaces the whole profile.
   if (!includeIds || includeIds.length === 0) {
     return scopedResult;
   }
 
-  // Partial selection: mutate only the analyzed scope inside the current full profile.
   const result: UserProfileData = {
     preferences: [...currentProfile.preferences],
     patterns: [...currentProfile.patterns],
@@ -1615,7 +1580,6 @@ export async function handleUpdateProfileItem(body?: any): Promise<ApiResponse<a
 
     const profileData: UserProfileData = JSON.parse(profile.profileData);
     const items: any[] = (profileData as any)[type] || [];
-    // Re-sort to match handleGetUserProfile's display order
     const metric = type === "preferences" ? "confidence" : "frequency";
     const sorted = sortProfileItems(items as any[], metric);
 
@@ -1711,7 +1675,6 @@ export async function handleGetTagMigrationProgress(): Promise<ApiResponse<Migra
 type TagMigrationChannel = "opencode" | "external";
 
 function isOpencodeTagMigrationConfigured(): boolean {
-  // "inherit" needs a live session model; tag migration has none.
   return Boolean(
     CONFIG.opencodeProvider && CONFIG.opencodeModel && CONFIG.opencodeModel !== "inherit"
   );
@@ -1896,8 +1859,6 @@ export async function handleRunTagMigrationBatch(
       }
     }
 
-    // Fresh run (or retry after a completed pass): reset counters so soft
-    // failures from a prior attempt can be retried instead of being skipped.
     if (migrationProgress.total === 0 || migrationProgress.isComplete) {
       migrationProgress.processed = 0;
       migrationProgress.cursor = 0;
@@ -1925,14 +1886,6 @@ export async function handleRunTagMigrationBatch(
               .filter((t: string) => t)
           : [];
 
-        // A memory that already has tags and a tags vector is fully migrated:
-        // re-embedding it produces the same vector and changes nothing. This
-        // endpoint walks the whole list one window at a time, and the normal
-        // case is a handful of untagged memories among hundreds that are done,
-        // so skipping the finished ones is the difference between a few
-        // seconds and re-vectorizing every memory on every run. Memories with
-        // tags but no tags vector are still processed so the missing vector is
-        // rebuilt.
         if (currentTags.length > 0 && m.tags_vector != null) {
           migrationProgress.processed++;
           continue;
@@ -1947,8 +1900,6 @@ export async function handleRunTagMigrationBatch(
               m.id,
             ]);
           } else {
-            // Soft failure (e.g. empty tool-call args): do not mark processed.
-            // Cursor still advances below so the batch window moves forward.
             const errorMsg = `Tag generation failed for memory ${m.id}: ${
               result.error ?? "no tags returned"
             }`;

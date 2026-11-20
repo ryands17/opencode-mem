@@ -107,7 +107,6 @@ describe("handleStats health data", () => {
       scope: "user",
       fileName: "user_aaaaaaaaaaaaaaaa_shard_0.db",
       fileExists: true,
-      // Rows inserted directly through insertVector do not update the shard registry.
       registeredVectorCount: 0,
       memoryCount: 2,
       oldestCreatedAt: new Date(firstCreatedAt).toISOString(),
@@ -144,10 +143,7 @@ describe("handleStats health data", () => {
     expect(daily?.find((item) => item.date === day(3))?.compactionInjections).toBe(1);
     expect(daily?.find((item) => item.date === day(4))?.profileInjections).toBe(1);
     expect(result.data?.dailyError).toBeUndefined();
-    // Windows CI needs >5s for two shard creations, three vector inserts, and
-    // the full stats walk; the default 5s per-test timeout races afterEach
-    // cleanup against the in-flight walk. Same budget as plugin-bundle-boundary.
-  }, 30_000);
+  });
 
   it("probe mode returns success without opening shards or scanning logs", async () => {
     const { handleStats } = await import("../src/services/api-handlers.js");

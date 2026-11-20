@@ -6,7 +6,7 @@ const root = path.resolve(import.meta.dirname, "../..");
 const out = path.join(root, ".github/pics/banner.png");
 const fontDir = "/tmp/jetbrains-mono/fonts/ttf";
 
-/** Keep in sync with `web/src/app.css` (.dark) — see `web/README.md`. */
+// WARNING: Keep in sync with `web/src/app.css` (.dark) — see `web/README.md`.
 const colors = {
   background: "#0a0a0a",
   panel: "#111111",
@@ -15,9 +15,7 @@ const colors = {
   foreground: "#d4d4d4",
   foregroundBright: "#ffffff",
   muted: "#8a8a8a",
-  /** Dark primary — matches `--primary` / Lucide Brain favicon */
   primary: "#c4b5fd",
-  /** Dark accent well — matches `--accent` / sidebar ICON_WELL base */
   accentWell: "#1a1428",
 };
 
@@ -25,7 +23,6 @@ const W = 1200;
 const H = 300;
 const CX = W / 2;
 
-/** JetBrains Mono advance ≈ 0.6em */
 function monoWidth(text, size) {
   return text.length * size * 0.6;
 }

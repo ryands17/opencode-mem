@@ -98,9 +98,7 @@
   $effect(() => {
     try {
       localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? "1" : "0");
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   });
 
   $effect(() => {

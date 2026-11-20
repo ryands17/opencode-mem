@@ -56,7 +56,6 @@ export async function registerV2Adapter(ctx: Context, legacy: any) {
   const messageIDs = new Map<string, string>();
   const suppressed = new Set<string>();
   const memoryContext = legacy.memoryContext as MemoryContextHooks | undefined;
-  /** Skill IDs last registered from opencode-mem DB (so we can remove stale ones). */
   const registeredSkillIds = new Set<string>();
 
   async function registerDbSkills(): Promise<void> {
@@ -158,8 +157,6 @@ export async function registerV2Adapter(ctx: Context, legacy: any) {
           return;
         }
         suppressed.delete(event.sessionID);
-        // In V1, the first injected part remains in history. V2 system parts
-        // exist only for one request, so retain that context across user turns.
         if (memoryContext.refreshOnPrompt()) contexts.delete(event.sessionID);
         if (!contexts.has(event.sessionID)) {
           contexts.set(event.sessionID, await memoryContext.load(event.sessionID));
@@ -188,8 +185,6 @@ export async function registerV2Adapter(ctx: Context, legacy: any) {
         contexts.clear();
       } else if (!suppressed.has(event.sessionID) && !contexts.has(event.sessionID)) {
         try {
-          // Rehydrate from the canonical memory store, without replaying the
-          // prompt hook or persisting a second plaintext copy in host storage.
           contexts.set(event.sessionID, await memoryContext.load(event.sessionID));
         } catch (error) {
           log("V2 restored memory context failed", { error: String(error) });

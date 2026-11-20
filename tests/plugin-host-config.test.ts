@@ -80,38 +80,45 @@ describe("OpenCode host client config", () => {
       },
       { preconnect: globalFetch.preconnect }
     );
-    const fallbackFetch: typeof fetch = Object.assign(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        const req = input instanceof Request ? input : new Request(input, init);
-        calls.push(`${req.method.toUpperCase()} ${req.url}`);
 
-        if (req.method === "POST" && req.url.endsWith("/session")) {
-          return new Response(JSON.stringify({ id: "ses_global_fetch" }));
+    const host = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const url = new URL(req.url);
+        calls.push(`${req.method.toUpperCase()} ${url.pathname}`);
+
+        if (req.method === "POST" && url.pathname === "/session") {
+          return new Response(JSON.stringify({ id: "ses_global_fetch" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
         }
-        if (req.method === "POST" && req.url.includes("/session/ses_global_fetch/message")) {
+        if (req.method === "POST" && url.pathname === "/session/ses_global_fetch/message") {
           return new Response(
             JSON.stringify({
               info: { structured_output: { topic: "fallback", count: 1 } },
               parts: [],
-            })
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
           );
         }
-        return new Response(JSON.stringify(true));
+        return new Response(JSON.stringify(true), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       },
-      { preconnect: globalFetch.preconnect }
-    );
+    });
 
     setHostFetch(staleHostFetch);
-    globalThis.fetch = fallbackFetch;
 
     try {
       await configureOpencodeHostTransport({
         client: { provider: { list: async () => ({ data: { connected: [] } }) } },
-        serverUrl: "http://localhost:4096",
+        serverUrl: host.url,
       });
 
       const result = await generateStructuredOutput({
-        client: createV2Client("http://localhost:4096"),
+        client: createV2Client(host.url),
         providerID: "openai",
         modelID: "gpt-5.5",
         systemPrompt: "s",
@@ -125,7 +132,7 @@ describe("OpenCode host client config", () => {
         "OpenCode host fetch unavailable; falling back to global fetch"
       );
     } finally {
-      globalThis.fetch = globalFetch;
+      host.stop(true);
       resetHostFetch();
       delete process.env.OPENCODE_MEM_LOG_FILE;
     }
@@ -239,35 +246,37 @@ describe("configured structured-output timeout wiring", () => {
     const { setStructuredOutputTimeoutConfig } =
       await import("../src/services/ai/opencode-provider.js");
     const { CONFIG } = await import("../src/config.js");
-    const globalFetch = globalThis.fetch;
     const previousTimeout = CONFIG.opencodeTimeoutMs;
 
+    const host = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const url = new URL(req.url);
+        if (req.method === "POST" && url.pathname === "/session") {
+          return new Response(JSON.stringify({ id: "ses_timeout_config" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (req.method === "POST" && url.pathname === "/session/ses_timeout_config/message") {
+          return await new Promise<Response>(() => {});
+        }
+        return new Response(JSON.stringify(true), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+
     try {
-      // Use a short configured timeout so the hang fails fast; the plugin
-      // init path (configureOpencodeHostTransport) must inject this value.
       CONFIG.opencodeTimeoutMs = 50;
       await configureOpencodeHostTransport({
         client: { provider: { list: async () => ({ data: { connected: [] } }) } },
       });
 
-      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-        const req = input instanceof Request ? input : new Request(input, init);
-        const url = req.url;
-        const method = req.method.toUpperCase();
-        if (method === "POST" && url.endsWith("/session")) {
-          return new Response(JSON.stringify({ id: "ses_timeout_config" }));
-        }
-        if (method === "POST" && url.includes("/session/ses_timeout_config/message")) {
-          return await new Promise<Response>(() => {});
-        }
-        return new Response(JSON.stringify(true));
-      }) as typeof fetch;
-
-      // No setStructuredOutputTimeoutMsForTests: that override would bypass
-      // the injection path under test.
       await expect(
         generateStructuredOutput({
-          client: createV2Client("http://localhost:4096"),
+          client: createV2Client(host.url),
           providerID: "openai",
           modelID: "gpt-5.5",
           systemPrompt: "s",
@@ -276,8 +285,8 @@ describe("configured structured-output timeout wiring", () => {
         })
       ).rejects.toThrow(/structured-output timed out after 50ms/);
     } finally {
+      host.stop(true);
       CONFIG.opencodeTimeoutMs = previousTimeout;
-      globalThis.fetch = globalFetch;
       resetHostFetch();
       setStructuredOutputTimeoutMsForTests(undefined);
       setStructuredOutputTimeoutConfig(previousTimeout ?? 90_000);

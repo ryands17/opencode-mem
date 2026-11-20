@@ -53,19 +53,10 @@ export class AnthropicMessagesProvider extends BaseAIProvider {
     return true;
   }
 
-  /**
-   * Provider tag stored on AI sessions so a subclass (e.g. MiniMax) records its
-   * own tag instead of the literal "anthropic" value.
-   */
   protected sessionProviderTag(): AIProviderType {
     return "anthropic";
   }
 
-  /**
-   * Resolve the Messages endpoint URL. The default appends `/messages` to the
-   * configured base URL, matching Anthropic's `https://api.anthropic.com/v1`
-   * base. Subclasses with a different path layout override this.
-   */
   protected resolveEndpoint(): string {
     return `${this.config.apiUrl}/messages`;
   }

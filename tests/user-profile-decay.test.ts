@@ -22,12 +22,9 @@ describe("user profile decay (#237)", () => {
 
   afterEach(async () => {
     await tursoConnectionManager.closeAll();
-    await new Promise((r) => setTimeout(r, 50));
     try {
       rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // ignore leftover test files
-    }
+    } catch {}
   });
 
   it("removes stale items below minEvidence after staleDays", async () => {
@@ -129,7 +126,6 @@ describe("user profile decay (#237)", () => {
       workflows: [],
     });
 
-    // 4 evidence < 5 and age > 1 day → removed (not the old hardcoded 30-day/alpha gate)
     expect(data.preferences).toHaveLength(0);
   });
 

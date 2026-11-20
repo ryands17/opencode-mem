@@ -33,12 +33,6 @@ const SUMMARY_REQUEST_OVERHEAD_BYTES = 1024;
 const SUMMARY_OUTPUT_RESERVE_BYTES = 16384;
 const SUMMARY_ANALYSIS_SUFFIX = `Analyze this conversation. If it contains technical work (code, bugs, features, decisions), create a concise summary and relevant tags. If it's non-technical (greetings, casual chat, incomplete requests), return type="skip" with empty summary.`;
 
-// Serializes captures across sessions. Replacing the old module-wide boolean
-// (which silently dropped any session whose idle fired while another capture
-// was in flight — a finished session then never got summarized), jobs now
-// queue behind the running one. The chain itself never rejects so one failed
-// job cannot poison the next; each caller still observes its own job's
-// actual outcome.
 let captureChain: Promise<void> = Promise.resolve();
 
 export interface PerformAutoCaptureOptions {
@@ -68,8 +62,6 @@ export async function performAutoCapture(
   };
 
   const next = captureChain.then(run, run);
-  // Keep the chain alive regardless of this job's outcome; `next` still
-  // rejects to the caller when their own job failed.
   captureChain = next.catch(() => {});
   return next;
 }
@@ -106,7 +98,6 @@ async function runAutoCapture(
       prompt.projectPath.replace(/\\/g, "/") !== directory.replace(/\\/g, "/")
     )
       continue;
-    // One missing host must not starve a later prompt with durable ready evidence.
     if (host.unavailable && !(await userPromptManager.getCaptureEvidence(prompt.id, directory)))
       continue;
     await capturePrompt(ctx, sessionID, directory, prompt, maxRetries, host, preferSavedEvidence);
@@ -163,9 +154,6 @@ async function capturePrompt(
         const savedEvidence = await userPromptManager.getCaptureEvidence(prompt.id, directory);
         let context: string | undefined;
 
-        // Deleted-session / startup replay: durable evidence is authoritative.
-        // Normal idle keeps the richer live transcript and only falls back when
-        // the host reports the session is gone.
         if (preferSavedEvidence && savedEvidence) {
           context = buildEvidenceContext(prompt, savedEvidence);
         } else if (preferSavedEvidence && !savedEvidence) {
@@ -219,9 +207,6 @@ async function capturePrompt(
             if (savedEvidence) {
               context = buildEvidenceContext(prompt, savedEvidence);
             } else {
-              // A session absent from this host may still exist in another desktop
-              // or CLI instance. Keep the prompt eligible for a later idle event;
-              // finally releases the claim without spending the capture retry budget.
               log("Auto-capture skipped: session context unavailable; prompt retained", {
                 phase,
                 outcome: "skipped",
@@ -450,8 +435,6 @@ export function extractAIContent(messages: any[]): {
 
     const toolParts = msg.parts.filter((p: any) => p.type === "tool" && !p.synthetic && !p.ignored);
     for (const tool of toolParts) {
-      // Host snapshots can repeat a part; only deduplicate a concrete identity,
-      // never identical output from distinct attempts (failure then recovery).
       const key = keyFor(msg, tool);
       if (key && (latest.get(key) !== tool || seen.has(key))) continue;
       if (key) seen.add(key);
@@ -463,7 +446,6 @@ export function extractAIContent(messages: any[]): {
     }
   }
 
-  // Select references before reading/sanitizing multi-megabyte results.
   for (const tool of selected) {
     const name = tool.name || tool.tool || "unknown";
     let input = "";
@@ -536,7 +518,6 @@ function fitTextResponses(textResponses: string[], maxBytes: number): string {
   const joined = textResponses.join(separator);
   if (utf8ByteLength(joined) <= maxBytes) return joined;
 
-  // Prefer newest assistant turns; truncate older content first.
   const kept: string[] = [];
   let usedBytes = 0;
 
@@ -610,8 +591,6 @@ export function buildMarkdownContext(
   maxContextBytes: number = CONFIG.autoCaptureMaxContextBytes ??
     DEFAULT_AUTO_CAPTURE_MAX_CONTEXT_BYTES
 ): string {
-  // Redact complete available text before any length budget can cut a credential
-  // (or its private-tag/PEM opener) away from the rest of its value.
   userPrompt = sanitizeMemoryContent(userPrompt);
   textResponses = textResponses.map(sanitizeMemoryContent);
   toolCalls = toolCalls.map((tool) => ({
@@ -668,7 +647,6 @@ export function buildMarkdownContext(
     return truncateToMaxBytes(prefix, maxContextBytes, CONTEXT_TRUNCATION_MARKER);
   }
 
-  // Insert AI section before tools to preserve the historical section order.
   const prefixWithoutTools = joinSections([
     ...memorySections,
     "## User Request",
@@ -780,9 +758,6 @@ async function tryOpencodeSummary(
   const { ensureProviderConnected, getV2Client, generateStructuredOutput } =
     await loadOpencodeProvider();
 
-  // "inherit" resolves to the model opencode used for the captured prompt
-  // (recorded by the chat.params hook). Without a concrete model id, the
-  // provider path cannot issue a structured-output request.
   let providerID = CONFIG.opencodeProvider!;
   let modelID = CONFIG.opencodeModel!;
   if (modelID === "inherit") {
@@ -795,8 +770,6 @@ async function tryOpencodeSummary(
     modelID = prompt.modelId;
   }
 
-  // One refresh-on-miss before failing: user-config providers register
-  // seconds after plugin setup, so the init snapshot may lag the host.
   if (!(await ensureProviderConnected(providerID))) {
     throw new Error(
       `opencode provider '${providerID}' is not connected. Check your opencode provider configuration.`
@@ -927,7 +900,6 @@ async function persistAutoCaptureMemory(
   }
 
   const scope = CONFIG.memory.defaultScope === "all-projects" ? "all-projects" : "project";
-  // Over-fetch before pin-filtering so pinned hits don't starve the candidate list.
   const searchLimit = Math.min(
     20,
     Math.max(CONFIG.updateOnCaptureMaxCandidates * 3, CONFIG.updateOnCaptureMaxCandidates + 5)
@@ -965,8 +937,6 @@ async function persistAutoCaptureMemory(
     decision = { action: "add" };
   }
 
-  // The optional rewrite call must not bypass the capture memory size bound.
-  // Fall back to the already bounded new summary, without truncating a caveat.
   if (decision.content && utf8ByteLength(decision.content) > MAX_CAPTURE_SUMMARY_BYTES) {
     decision = { action: "add" };
   }

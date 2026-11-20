@@ -12,9 +12,6 @@ function createContext(overrides: Record<string, unknown> = {}) {
       directory: "/workspace/project",
       project: { id: "project", directory: "/workspace/project", canonical: "project" },
     },
-    // Native v2 context contract: ctx.provider.list() -> { location, data }
-    // with ProviderInfo rows (id + activation). The legacy bridge derives
-    // connectivity from this directory, not from model.list.
     provider: {
       list: async () => ({
         location: { directory: "/workspace/project" },
@@ -49,9 +46,6 @@ function createContext(overrides: Record<string, unknown> = {}) {
 
 describe("OpenCode v2 legacy client bridge", () => {
   it("reports providers with active models from the provider directory", async () => {
-    // Connectivity comes from ctx.provider.list() (activation auto/enabled);
-    // model.list is no longer the source (broker 'opencode' hid real ids).
-    // model.list throws here if ever consulted.
     const ctx = createContext({
       model: {
         list: async () => {
@@ -167,8 +161,6 @@ describe("OpenCode v2 legacy client bridge", () => {
       },
     });
 
-    // The v2 Generate API has no tools; the instruction must come after the
-    // system/user text and forbid tool use so obedient models answer with JSON.
     expect(generationPrompt).toContain("No tools are available");
     expect(generationPrompt.indexOf("No tools are available")).toBeGreaterThan(
       generationPrompt.indexOf("Analyze these prompts.")
@@ -425,7 +417,6 @@ describe("OpenCode v2 legacy client bridge", () => {
         payload: { type: "provider.updated", data: {} },
       })
     ).toBe(true);
-    // Still location-scoped when the host does attach a directory.
     expect(
       await eventBelongsToLocation(ctx, {
         type: "provider.updated",
@@ -433,7 +424,6 @@ describe("OpenCode v2 legacy client bridge", () => {
         data: {},
       })
     ).toBe(false);
-    // Unrelated events without location/session stay filtered out.
     expect(await eventBelongsToLocation(ctx, { type: "session.idle", data: {} })).toBe(false);
   });
 

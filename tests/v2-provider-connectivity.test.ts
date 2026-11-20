@@ -5,13 +5,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLegacyClient } from "../src/v2/legacy-client.js";
 
-/**
- * Typed-shape helpers mirroring the @opencode/client ProviderListOutput
- * contract used by the native v2 plugin context:
- *   ctx.provider.list() -> { location, data: ProviderInfo[] }
- *   ProviderInfo { id, canonical?, activation: auto|enabled|disabled, ... }
- */
-
 interface FixtureProviderInfo {
   id: string;
   canonical?: string;
@@ -28,7 +21,6 @@ function providerListOutput(providers: FixtureProviderInfo[]) {
   };
 }
 
-/** ctx.model.list that explodes if the bridge ever falls back to it. */
 function explodingModelList(): () => Promise<never> {
   return async () => {
     throw new Error("model.list must not be called for provider connectivity");
@@ -66,10 +58,6 @@ function createContext(options: {
 
 describe("v2 legacy client provider connectivity", () => {
   it("includes an enabled provider absent from model.list (the broker-directory bug)", async () => {
-    // Reproduces the live failure: model.list reports only broker 'opencode'
-    // models while the real provider directory has newapi activation=enabled.
-    // The old implementation returned ['opencode'], so isProviderConnected(
-    // 'newapi') was false and every capture exhausted its retries.
     const ctx = createContext({
       providers: [
         {
@@ -91,8 +79,6 @@ describe("v2 legacy client provider connectivity", () => {
     });
     const client = createLegacyClient(ctx);
     const result = await client.provider.list();
-    // Model list is consulted nowhere: model.list above does NOT throw, but
-    // the default explodingModelList variant in the next test proves that.
     expect(result.data.connected).toEqual(["newapi", "opencode"]);
   });
 
@@ -102,13 +88,8 @@ describe("v2 legacy client provider connectivity", () => {
         { id: "auto-provider", name: "Auto", activation: "auto", package: "p1" },
         { id: "disabled-provider", name: "Off", activation: "disabled", package: "p2" },
         { id: "enabled-provider", name: "On", activation: "enabled", package: "p3" },
-        // Duplicate id entries (directory can list a provider more than
-        // once, e.g. config + auth file sources) must dedup to one entry.
         { id: "enabled-provider", name: "On (again)", activation: "enabled", package: "p3" },
       ],
-      // model.list throws if called — the provider directory is the single
-      // source of truth; a broker-directory world must not resurrect the
-      // model-based fallback.
       modelList: explodingModelList(),
     });
     const client = createLegacyClient(ctx);
@@ -117,8 +98,6 @@ describe("v2 legacy client provider connectivity", () => {
   });
 
   it("returns an authoritative empty list when the directory is empty or all-disabled", async () => {
-    // Empty directory and all-disabled directory must both stay empty; no
-    // fallback to model.list (which throws here) even though models exist.
     const empty = await createLegacyClient(createContext({ providers: [] })).provider.list();
     expect(empty.data.connected).toEqual([]);
 
@@ -141,8 +120,6 @@ describe("v2 legacy client provider connectivity", () => {
       },
     });
     const client = createLegacyClient(ctx);
-    // The init path catches and logs; the bridge itself must not swallow
-    // the error and fabricate connected=[] (which reads as "no providers").
     await expect(client.provider.list()).rejects.toThrow("provider directory unavailable");
   });
 

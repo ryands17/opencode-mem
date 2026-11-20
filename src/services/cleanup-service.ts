@@ -17,7 +17,6 @@ interface CleanupResult {
   aiSessionsDeleted: number;
 }
 
-/** Process-lifetime: Turso rejected VACUUM; do not retry every cleanup. */
 let vacuumUnsupported = false;
 
 export class CleanupService {
@@ -134,7 +133,6 @@ export class CleanupService {
 
             const hardDeleted = await tursoVectorSearch.deleteVector(db, String(memory.id));
             if (!hardDeleted) {
-              // IdxDelete quarantine (soft-delete) — do not count as hard-deleted.
               continue;
             }
             await tursoShardManager.decrementVectorCount(shard.id);
@@ -150,7 +148,6 @@ export class CleanupService {
           }
         }
 
-        // Hard-purge soft-deleted trash past retention.
         const trashCutoff = Date.now() - CONFIG.dreaming.trashRetentionDays * 24 * 60 * 60 * 1000;
         try {
           const purged = await tursoVectorSearch.purgeDeletedBefore(db, trashCutoff);

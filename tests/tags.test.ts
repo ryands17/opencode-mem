@@ -21,7 +21,6 @@ describe("tags", () => {
 
     it("should handle trailing separator", () => {
       const result = getProjectName("/home/user/projects/my-app/");
-      // Should handle trailing slash gracefully
       expect(typeof result).toBe("string");
     });
 

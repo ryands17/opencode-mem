@@ -17,21 +17,6 @@ function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex").slice(0, 16);
 }
 
-/**
- * Marker file whose presence pins a directory as the opencode-mem project root.
- *
- * A multi-repo workspace (e.g. a tree managed by Google `repo`, a monorepo,
- * or any layout where several nested git repositories should share one memory
- * store) drops this file at the workspace root. Every session started anywhere
- * underneath then resolves onto that root instead of onto whichever physical
- * git repository the working directory happens to live in.
- *
- * Unlike an environment variable or a config-file value, the marker is found
- * by walking up from the working directory that every code path already passes
- * in (the plugin's `ctx.directory`, the web API's `process.cwd()`), so project
- * identity never depends on which long-lived opencode process happens to own
- * the shared web server.
- */
 const PROJECT_MARKER = ".opencode-mem-project";
 
 function canonicalPath(path: string): string {
@@ -78,9 +63,7 @@ function resolveTrustedWindowsShell(untrustedRoot: string): string | null {
       accessSync(path, constants.X_OK);
       const candidate = canonicalPath(path);
       if (!isPathInside(untrustedRoot, candidate)) return candidate;
-    } catch {
-      // ignore unreadable or untrusted PATH entries
-    }
+    } catch {}
   }
   return null;
 }
@@ -107,9 +90,7 @@ function resolveTrustedGitCommand(directory: string): GitCommand | null {
 
         const shell = resolveTrustedWindowsShell(untrustedRoot);
         if (shell) return { executable, shell };
-      } catch {
-        // ignore unreadable or untrusted PATH entries
-      }
+      } catch {}
     }
   }
 
@@ -201,8 +182,6 @@ export function getGitTopLevel(directory: string): string | null {
   return runGit(["rev-parse", "--show-toplevel"], directory);
 }
 
-// Git-only fallbacks, kept separate so the marker-aware entry points below
-// can short-circuit on a marker and reuse these without re-running detection.
 function getGitProjectRoot(directory: string): string {
   const commonDir = getGitCommonDir(directory);
   if (commonDir && basename(commonDir) === ".git") {
@@ -269,14 +248,9 @@ export function getUserTagInfo(directory: string = process.cwd()): TagInfo {
 }
 
 export function getProjectTagInfo(directory: string): TagInfo {
-  // Resolve the marker exactly once and derive root + identity from it, so a
-  // single getProjectTagInfo call never walks the ancestry more than once.
   const markerRoot = findMarkerProjectRoot(directory);
   const projectRoot = markerRoot ?? getGitProjectRoot(directory);
   const projectName = getProjectName(projectRoot);
-  // When a marker pins the project root, any git remote belongs to a single
-  // nested sub-repo and would be misleading for the grouped workspace, so
-  // leave it unset.
   const gitRepoUrl = markerRoot ? null : getGitRepoUrl(directory);
   const projectIdentity = markerRoot ? `path:${markerRoot}` : getGitProjectIdentity(projectRoot);
 

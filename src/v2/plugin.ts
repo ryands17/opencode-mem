@@ -9,7 +9,6 @@ import { MemToast } from "./toast-rpc.js";
 const OpenCodeMemPluginV2: Plugin = {
   id: "opencode-mem",
   async setup(ctx) {
-    // Server Context has no ui.toast; bridge toast intents to the ./tui companion.
     const toastRpc = await ctx.rpc.register(MemToast, {});
     const legacyClient = createLegacyClient(ctx, toastRpc);
     const legacy = (await OpenCodeMemPlugin({
@@ -20,12 +19,8 @@ const OpenCodeMemPluginV2: Plugin = {
       serverUrl: undefined,
     } as any)) as any;
 
-    // The V1 initializer cannot discover a server URL from a native V2
-    // context. Route internal structured-output calls through the adapter.
     const { setV2Client, setStructuredOutputTimeoutConfig } = await loadOpencodeProvider();
     setV2Client(legacyClient);
-    // Same timeout wiring as the V1 init path (configureOpencodeHostTransport):
-    // the bundled provider module must not import config.js itself.
     setStructuredOutputTimeoutConfig(CONFIG.opencodeTimeoutMs);
 
     return registerV2Adapter(ctx, legacy);

@@ -1,12 +1,3 @@
-/**
- * Process-wide lease count for live plugin instances. OpenCode Desktop hosts
- * several sessions in one process; each session loads its own plugin instance.
- * Disposing one must not close the shared Turso pool while others are alive
- * (#443).
- *
- * Kept free of manager imports so `index.ts` can retain without pulling the
- * full Turso lifecycle graph at module load.
- */
 const PLUGIN_TURSO_REFS_KEY = Symbol.for("opencode-mem.plugin.tursoRefs");
 
 type PluginTursoRefs = { count: number };
@@ -37,7 +28,6 @@ export function releasePluginTursoLease(): boolean {
     refs.count -= 1;
     return refs.count === 0;
   }
-  // No retain recorded (tests calling memoryClient.close() directly) — close.
   return true;
 }
 

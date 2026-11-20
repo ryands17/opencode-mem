@@ -39,44 +39,60 @@ interface FetchCall {
   url: string;
   method: string;
   body: unknown;
+  headers: Record<string, string>;
 }
 
-function installFetchMock(responder: (call: FetchCall) => { status?: number; body: unknown }): {
-  calls: FetchCall[];
-  restore: () => void;
-} {
-  const original = globalThis.fetch;
-  const calls: FetchCall[] = [];
+type HostResponse = { status?: number; body?: unknown };
 
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const req =
-      input instanceof Request
-        ? input
-        : new Request(typeof input === "string" ? input : input.toString(), init);
-    const url = req.url;
-    const method = req.method.toUpperCase();
-    let body: unknown = undefined;
-    if (method !== "GET" && method !== "HEAD") {
-      try {
-        const text = await req.text();
-        body = text ? JSON.parse(text) : undefined;
-      } catch {
-        body = undefined;
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function startHostServer(
+  respond: (
+    call: FetchCall
+  ) => HostResponse | null | undefined | Promise<HostResponse | null | undefined>
+): {
+  calls: FetchCall[];
+  url: string;
+  stop: () => void;
+} {
+  const calls: FetchCall[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const url = req.url;
+      const method = req.method.toUpperCase();
+      let body: unknown = undefined;
+      if (method !== "GET" && method !== "HEAD") {
+        try {
+          const text = await req.text();
+          body = text ? JSON.parse(text) : undefined;
+        } catch {
+          body = undefined;
+        }
       }
-    }
-    const call: FetchCall = { url, method, body };
-    calls.push(call);
-    const { status = 200, body: respBody } = responder(call);
-    return new Response(JSON.stringify(respBody), {
-      status,
-      headers: { "Content-Type": "application/json" },
-    });
-  }) as typeof fetch;
+      const call: FetchCall = {
+        url,
+        method,
+        body,
+        headers: Object.fromEntries(req.headers.entries()),
+      };
+      calls.push(call);
+      const response = await respond(call);
+      if (!response) {
+        return await new Promise<Response>(() => {});
+      }
+      return new Response(JSON.stringify(response.body), {
+        status: response.status ?? 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
 
   return {
     calls,
-    restore: () => {
-      globalThis.fetch = original;
+    url: String(server.url).replace(/\/+$/, ""),
+    stop: () => {
+      server.stop(true);
     },
   };
 }
@@ -196,7 +212,7 @@ describe("v2 client cache", () => {
 });
 
 describe("generateStructuredOutput", () => {
-  let mock: ReturnType<typeof installFetchMock> | undefined;
+  let mock: ReturnType<typeof startHostServer> | undefined;
 
   beforeEach(() => {
     mock = undefined;
@@ -207,7 +223,7 @@ describe("generateStructuredOutput", () => {
   });
 
   afterEach(() => {
-    mock?.restore();
+    mock?.stop();
     resetHostFetch();
     resetInternalStructuredSessions();
     setStructuredOutputTimeoutConfig(90_000);
@@ -215,7 +231,7 @@ describe("generateStructuredOutput", () => {
   });
 
   it("posts schema without noReply and returns parsed structured output", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (call.method === "POST" && call.url.endsWith("/session")) {
         return { body: { id: "ses_test_1" } };
       }
@@ -233,7 +249,7 @@ describe("generateStructuredOutput", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     const result = await generateStructuredOutput({
       client,
       providerID: "github-copilot",
@@ -274,7 +290,7 @@ describe("generateStructuredOutput", () => {
   });
 
   it("uses text-JSON (no format:json_schema) for anthropic / claude-auth (#278)", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (call.method === "POST" && call.url.endsWith("/session")) {
         return { body: { id: "ses_anthropic_text" } };
       }
@@ -297,7 +313,7 @@ describe("generateStructuredOutput", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     const result = await generateStructuredOutput({
       client,
       providerID: "anthropic",
@@ -323,7 +339,7 @@ describe("generateStructuredOutput", () => {
   });
 
   it("forwards variant inside format:json_schema path", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (call.method === "POST" && call.url.endsWith("/session")) {
         return { body: { id: "ses_variant_1" } };
       }
@@ -341,7 +357,7 @@ describe("generateStructuredOutput", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await generateStructuredOutput({
       client,
       providerID: "newapi",
@@ -354,14 +370,12 @@ describe("generateStructuredOutput", () => {
 
     const promptCall = mock.calls.find((c) => c.url.includes("/session/ses_variant_1/message"));
     const promptBody = promptCall!.body as Record<string, unknown>;
-    // V1 SDK SessionPromptData.body: model has no variant; a sibling
-    // top-level `variant` field carries it.
     expect(promptBody.model).toEqual({ providerID: "newapi", modelID: "grok-4.7" });
     expect(promptBody.variant).toBe("xhigh");
   });
 
   it("omits the variant key when not provided (json_schema and text-json paths)", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (call.method === "POST" && call.url.endsWith("/session")) {
         return { body: { id: "ses_novariant" } };
       }
@@ -379,7 +393,7 @@ describe("generateStructuredOutput", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await generateStructuredOutput({
       client,
       providerID: "newapi",
@@ -396,7 +410,7 @@ describe("generateStructuredOutput", () => {
   });
 
   it("forwards variant on the anthropic text-json path as a top-level body field", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (call.method === "POST" && call.url.endsWith("/session")) {
         return { body: { id: "ses_anthropic_variant" } };
       }
@@ -414,7 +428,7 @@ describe("generateStructuredOutput", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await generateStructuredOutput({
       client,
       providerID: "anthropic",
@@ -434,7 +448,7 @@ describe("generateStructuredOutput", () => {
   });
 
   it("rejects with full info.error details when opencode reports an assistant error", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (call.method === "POST" && call.url.endsWith("/session")) {
         return { body: { id: "ses_err" } };
       }
@@ -462,7 +476,7 @@ describe("generateStructuredOutput", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await expect(
       generateStructuredOutput({
         client,
@@ -491,7 +505,7 @@ describe("generateStructuredOutput", () => {
   });
 
   it("rejects when info.structured is missing", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (call.method === "POST" && call.url.endsWith("/session")) {
         return { body: { id: "ses_empty" } };
       }
@@ -504,7 +518,7 @@ describe("generateStructuredOutput", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await expect(
       generateStructuredOutput({
         client,
@@ -518,14 +532,14 @@ describe("generateStructuredOutput", () => {
   });
 
   it("rejects when session.create returns no id", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (call.method === "POST" && call.url.endsWith("/session")) {
         return { body: {} };
       }
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await expect(
       generateStructuredOutput({
         client,
@@ -539,7 +553,7 @@ describe("generateStructuredOutput", () => {
   });
 
   it("swallows session.delete failure and still returns success", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (call.method === "POST" && call.url.endsWith("/session")) {
         return { body: { id: "ses_delfail" } };
       }
@@ -557,7 +571,7 @@ describe("generateStructuredOutput", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     const result = await generateStructuredOutput({
       client,
       providerID: "github-copilot",
@@ -570,7 +584,7 @@ describe("generateStructuredOutput", () => {
   });
 
   it("attempts session.delete even when prompt fails", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (call.method === "POST" && call.url.endsWith("/session")) {
         return { body: { id: "ses_promptfail" } };
       }
@@ -593,7 +607,7 @@ describe("generateStructuredOutput", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await expect(
       generateStructuredOutput({
         client,
@@ -609,7 +623,7 @@ describe("generateStructuredOutput", () => {
   });
 
   it("forwards retryCount inside format when provided", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (call.method === "POST" && call.url.endsWith("/session")) {
         return { body: { id: "ses_retry" } };
       }
@@ -627,7 +641,7 @@ describe("generateStructuredOutput", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await generateStructuredOutput({
       client,
       providerID: "github-copilot",
@@ -646,7 +660,7 @@ describe("generateStructuredOutput", () => {
 });
 
 describe("generateStructuredOutput regression tests (issue #110)", () => {
-  let mock: ReturnType<typeof installFetchMock> | undefined;
+  let mock: ReturnType<typeof startHostServer> | undefined;
 
   beforeEach(() => {
     mock = undefined;
@@ -654,12 +668,12 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
   });
 
   afterEach(() => {
-    mock?.restore();
+    mock?.stop();
     resetHostFetch();
   });
 
   it("forwards directory as query param on create/prompt/delete", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (
         call.method === "POST" &&
         call.url.includes("/session") &&
@@ -681,7 +695,7 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await generateStructuredOutput({
       client,
       providerID: "github-copilot",
@@ -715,7 +729,7 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
   });
 
   it("omits the directory query param when not provided", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (
         call.method === "POST" &&
         call.url.includes("/session") &&
@@ -737,7 +751,7 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await generateStructuredOutput({
       client,
       providerID: "github-copilot",
@@ -754,7 +768,7 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
   });
 
   it("normalizes a base URL with a trailing slash", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (
         call.method === "POST" &&
         call.url.includes("/session") &&
@@ -776,7 +790,7 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999/");
+    const client = createV2Client(`${mock.url}/`);
     await generateStructuredOutput({
       client,
       providerID: "github-copilot",
@@ -787,14 +801,13 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
     });
 
     for (const c of mock.calls) {
-      // Never produces `//session` from a single trailing slash
       expect(c.url).not.toMatch(/\/\/session/);
-      expect(c.url.startsWith("http://127.0.0.1:9999/session")).toBe(true);
+      expect(c.url.startsWith(`${mock.url}/session`)).toBe(true);
     }
   });
 
   it("accepts a URL object for createV2Client", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (
         call.method === "POST" &&
         call.url.includes("/session") &&
@@ -816,7 +829,7 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client(new URL("http://127.0.0.1:9999"));
+    const client = createV2Client(new URL(mock.url));
     await generateStructuredOutput({
       client,
       providerID: "github-copilot",
@@ -829,55 +842,36 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
     expect(mock.calls.length).toBe(3);
   });
 
-  it("uses the injected opencode host fetch instead of global fetch", async () => {
-    const globalFetch = globalThis.fetch;
-    const calls: FetchCall[] = [];
+  it("routes requests through the injected opencode host fetch", async () => {
+    mock = startHostServer((call) => {
+      if (call.method === "POST" && call.url.endsWith("/session")) {
+        return { body: { id: "ses_host_fetch" } };
+      }
+      if (call.method === "POST" && call.url.includes("/session/ses_host_fetch/message")) {
+        return {
+          body: { info: { structured_output: { topic: "host", count: 1 } }, parts: [] },
+        };
+      }
+      if (call.method === "DELETE") {
+        return { body: true };
+      }
+      throw new Error(`unexpected host fetch: ${call.method} ${call.url}`);
+    });
 
-    const failingFetch: typeof fetch = Object.assign(
-      async () => {
-        throw new TypeError("global fetch should not be used");
-      },
-      { preconnect: globalFetch.preconnect }
-    );
-    globalThis.fetch = failingFetch;
-
+    const realFetch = globalThis.fetch;
     const hostFetch: typeof fetch = Object.assign(
       async (input: RequestInfo | URL, init?: RequestInit) => {
-        const req = input instanceof Request ? input : new Request(input, init);
-        const method = req.method.toUpperCase();
-        const text = method === "GET" || method === "HEAD" ? "" : await req.text();
-        const call: FetchCall = {
-          url: req.url,
-          method,
-          body: text ? JSON.parse(text) : undefined,
-        };
-        calls.push(call);
-
-        if (call.method === "POST" && call.url.endsWith("/session")) {
-          return new Response(JSON.stringify({ id: "ses_host_fetch" }), {
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        if (call.method === "POST" && call.url.includes("/session/ses_host_fetch/message")) {
-          return new Response(
-            JSON.stringify({ info: { structured_output: { topic: "host", count: 1 } }, parts: [] }),
-            { headers: { "Content-Type": "application/json" } }
-          );
-        }
-        if (call.method === "DELETE") {
-          return new Response(JSON.stringify(true), {
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        throw new Error(`unexpected host fetch: ${call.method} ${call.url}`);
+        const headers = new Headers(init?.headers);
+        headers.set("x-opencode-mem-host-fetch", "1");
+        return realFetch(input, { ...init, headers });
       },
-      { preconnect: globalFetch.preconnect }
+      { preconnect: realFetch.preconnect }
     );
 
     setHostFetch(hostFetch);
 
     try {
-      const client = createV2Client("http://localhost:4096");
+      const client = createV2Client(mock.url);
       const result = await generateStructuredOutput({
         client,
         providerID: "openai",
@@ -888,20 +882,22 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
       });
 
       expect(result).toEqual({ topic: "host", count: 1 });
-      expect(calls.map((call) => call.method)).toEqual(["POST", "POST", "DELETE"]);
+      expect(mock.calls.map((call) => call.method)).toEqual(["POST", "POST", "DELETE"]);
+      expect(mock.calls.every((call) => call.headers["x-opencode-mem-host-fetch"] === "1")).toBe(
+        true
+      );
     } finally {
-      globalThis.fetch = globalFetch;
       resetHostFetch();
     }
   });
 
   it("surfaces a non-2xx response from POST /session", async () => {
-    mock = installFetchMock(() => ({
+    mock = startHostServer(() => ({
       status: 502,
       body: { error: "bad gateway", token: "secret-token" },
     }));
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     const promise = generateStructuredOutput({
       client,
       providerID: "github-copilot",
@@ -912,19 +908,20 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
     });
 
     await expect(promise).rejects.toThrow(
-      /POST \/session failed at http:\/\/127\.0\.0\.1:9999\/session \(502 Bad Gateway\): <redacted response body>/
+      new RegExp(
+        `POST \\/session failed at ${escapeRegExp(mock.url)}\\/session \\(502 Bad Gateway\\): <redacted response body>`
+      )
     );
     await promise.catch((error: unknown) => {
       expect(String(error)).not.toContain("secret-token");
       expect(String(error)).not.toContain("bad gateway");
     });
 
-    // No further calls should have been made (no prompt, no delete)
     expect(mock!.calls.length).toBe(1);
   });
 
   it("redacts directory query params and response bodies from prompt failure diagnostics", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (
         call.method === "POST" &&
         call.url.includes("/session") &&
@@ -944,7 +941,7 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await expect(
       generateStructuredOutput({
         client,
@@ -956,7 +953,9 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
         directory: "/private/project",
       })
     ).rejects.toThrow(
-      /POST \/session\/\{id\}\/message failed at http:\/\/127\.0\.0\.1:9999\/session\/ses_redact\/message \(500 Internal Server Error\): <redacted response body>/
+      new RegExp(
+        `POST \\/session\\/\\{id\\}\\/message failed at ${escapeRegExp(mock.url)}\\/session\\/ses_redact\\/message \\(500 Internal Server Error\\): <redacted response body>`
+      )
     );
 
     await generateStructuredOutput({
@@ -977,7 +976,7 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
   });
 
   it("surfaces a non-2xx response from POST /session/{id}/message and still cleans up", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (
         call.method === "POST" &&
         call.url.includes("/session") &&
@@ -994,7 +993,7 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await expect(
       generateStructuredOutput({
         client,
@@ -1005,43 +1004,47 @@ describe("generateStructuredOutput regression tests (issue #110)", () => {
         schema,
       })
     ).rejects.toThrow(
-      /POST \/session\/\{id\}\/message failed at http:\/\/127\.0\.0\.1:9999\/session\/ses_prompt_500\/message \(500 Internal Server Error\): <redacted response body>/
+      new RegExp(
+        `POST \\/session\\/\\{id\\}\\/message failed at ${escapeRegExp(mock.url)}\\/session\\/ses_prompt_500\\/message \\(500 Internal Server Error\\): <redacted response body>`
+      )
     );
 
-    // delete is best-effort and should still run
     expect(mock!.calls.find((c) => c.method === "DELETE")).toBeDefined();
   });
 
   it("propagates a network error from POST /session and skips prompt/delete", async () => {
-    mock = installFetchMock(() => {
-      throw new TypeError("fetch failed: ECONNREFUSED");
+    let onSessionArrived!: () => void;
+    const sessionArrived = new Promise<void>((resolve) => {
+      onSessionArrived = resolve;
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
-    await expect(
-      generateStructuredOutput({
-        client,
-        providerID: "github-copilot",
-        modelID: "gpt-4o-mini",
-        systemPrompt: "s",
-        userPrompt: "u",
-        schema,
-      })
-    ).rejects.toThrow(/ECONNREFUSED/);
+    mock = startHostServer((call) => {
+      if (call.method === "POST" && call.url.endsWith("/session")) {
+        onSessionArrived();
+        return null;
+      }
+      return { body: true };
+    });
 
-    expect(mock!.calls.length).toBe(1);
+    const client = createV2Client(mock.url);
+    const pending = generateStructuredOutput({
+      client,
+      providerID: "github-copilot",
+      modelID: "gpt-4o-mini",
+      systemPrompt: "s",
+      userPrompt: "u",
+      schema,
+    });
+
+    await sessionArrived;
+    mock.stop();
+    await expect(pending).rejects.toThrow(/fetch failed|connection|abort/i);
+
+    expect(mock.calls.length).toBe(1);
   });
 
   it("throws when generateStructuredOutput is called without prior createV2Client", async () => {
-    // Force-clear the cached base URL by creating a fresh module-level state.
-    // We cannot easily reset the module, so we use a unique schema sentinel
-    // and rely on the test ordering: this test only runs if the previous
-    // tests did not leak base URL. The cleanest way: re-import the module.
     const mod = await import(`../src/services/ai/opencode-provider.js?cachebust=${Math.random()}`);
-    // createV2Client has the side effect of setting the base URL, so any
-    // call from other tests would have populated it. We just verify that
-    // the function exists and behaves consistently when called repeatedly
-    // (idempotent). This test is here to lock in the API surface for issue #110.
     expect(typeof mod.generateStructuredOutput).toBe("function");
     expect(typeof mod.createV2Client).toBe("function");
   });
@@ -1160,7 +1163,7 @@ describe("resolveOpencodeModelRef / inherit", () => {
       })
     );
 
-    const mock = installFetchMock((call) => {
+    const mock = startHostServer((call) => {
       if (
         call.method === "POST" &&
         call.url.includes("/session") &&
@@ -1184,7 +1187,7 @@ describe("resolveOpencodeModelRef / inherit", () => {
     });
 
     try {
-      const client = createV2Client("http://127.0.0.1:9999");
+      const client = createV2Client(mock.url);
       const result = await generateStructuredOutput({
         client,
         providerID: "local",
@@ -1201,13 +1204,13 @@ describe("resolveOpencodeModelRef / inherit", () => {
       });
       expect(JSON.stringify(promptCall?.body)).not.toContain('"inherit"');
     } finally {
-      mock.restore();
+      mock.stop();
     }
   });
 });
 
 describe("generateStructuredOutput tool isolation (issue #189)", () => {
-  let mock: ReturnType<typeof installFetchMock> | undefined;
+  let mock: ReturnType<typeof startHostServer> | undefined;
 
   beforeEach(() => {
     mock = undefined;
@@ -1218,7 +1221,7 @@ describe("generateStructuredOutput tool isolation (issue #189)", () => {
   });
 
   afterEach(() => {
-    mock?.restore();
+    mock?.stop();
     resetHostFetch();
     resetInternalStructuredSessions();
     setStructuredOutputTimeoutConfig(90_000);
@@ -1226,12 +1229,11 @@ describe("generateStructuredOutput tool isolation (issue #189)", () => {
   });
 
   it("fails closed when structured output is missing and still deletes the session", async () => {
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (call.method === "POST" && call.url.endsWith("/session")) {
         return { body: { id: "ses_no_so" } };
       }
       if (call.method === "POST" && call.url.includes("/session/ses_no_so/message")) {
-        // Simulates a turn that used ordinary tools / no StructuredOutput result.
         return {
           body: {
             info: {},
@@ -1245,7 +1247,7 @@ describe("generateStructuredOutput tool isolation (issue #189)", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await expect(
       generateStructuredOutput({
         client,
@@ -1264,57 +1266,23 @@ describe("generateStructuredOutput tool isolation (issue #189)", () => {
   it("times out, aborts, and deletes when the prompt never returns", async () => {
     setStructuredOutputTimeoutMsForTests(50);
 
-    const original = globalThis.fetch;
-    const calls: FetchCall[] = [];
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const req =
-        input instanceof Request
-          ? input
-          : new Request(typeof input === "string" ? input : input.toString(), init);
-      const url = req.url;
-      const method = req.method.toUpperCase();
-      let body: unknown = undefined;
-      if (method !== "GET" && method !== "HEAD") {
-        try {
-          const text = await req.text();
-          body = text ? JSON.parse(text) : undefined;
-        } catch {
-          body = undefined;
-        }
+    mock = startHostServer((call) => {
+      if (call.method === "POST" && call.url.endsWith("/session")) {
+        return { body: { id: "ses_hang" } };
       }
-      calls.push({ url, method, body });
-      if (method === "POST" && url.endsWith("/session")) {
-        return new Response(JSON.stringify({ id: "ses_hang" }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+      if (call.method === "POST" && call.url.includes("/session/ses_hang/message")) {
+        return null;
       }
-      if (method === "POST" && url.includes("/session/ses_hang/message")) {
-        // Never resolves — simulates an unbounded agent/tool loop.
-        return await new Promise<Response>(() => {});
+      if (call.method === "POST" && call.url.includes("/session/ses_hang/abort")) {
+        return { body: true };
       }
-      if (method === "POST" && url.includes("/session/ses_hang/abort")) {
-        return new Response(JSON.stringify(true), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+      if (call.method === "DELETE" && call.url.includes("/session/ses_hang")) {
+        return { body: true };
       }
-      if (method === "DELETE" && url.includes("/session/ses_hang")) {
-        return new Response(JSON.stringify(true), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      throw new Error(`unexpected fetch: ${method} ${url}`);
-    }) as typeof fetch;
-    mock = {
-      calls,
-      restore: () => {
-        globalThis.fetch = original;
-      },
-    };
+      throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
+    });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await expect(
       generateStructuredOutput({
         client,
@@ -1326,58 +1294,34 @@ describe("generateStructuredOutput tool isolation (issue #189)", () => {
       })
     ).rejects.toThrow(/structured-output timed out after 50ms/);
 
-    expect(calls.some((c) => c.method === "POST" && c.url.includes("/abort"))).toBe(true);
-    expect(calls.some((c) => c.method === "DELETE")).toBe(true);
+    expect(mock.calls.some((c) => c.method === "POST" && c.url.includes("/abort"))).toBe(true);
+    expect(mock.calls.some((c) => c.method === "DELETE")).toBe(true);
     expect(isInternalStructuredSession("ses_hang")).toBe(false);
   });
 
   it("uses the configured timeout (setStructuredOutputTimeoutConfig) with no test override", async () => {
-    // No setStructuredOutputTimeoutMsForTests call: the value injected by the
-    // plugin init (CONFIG.opencodeTimeoutMs) must drive the inner timeout.
     const { setStructuredOutputTimeoutConfig } =
       await import("../src/services/ai/opencode-provider.js");
     setStructuredOutputTimeoutConfig(40);
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const req =
-        input instanceof Request
-          ? input
-          : new Request(typeof input === "string" ? input : input.toString(), init);
-      const url = req.url;
-      const method = req.method.toUpperCase();
-      if (method === "POST" && url.endsWith("/session")) {
-        return new Response(JSON.stringify({ id: "ses_config_timeout" }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+    mock = startHostServer((call) => {
+      if (call.method === "POST" && call.url.endsWith("/session")) {
+        return { body: { id: "ses_config_timeout" } };
       }
-      if (method === "POST" && url.includes("/session/ses_config_timeout/message")) {
-        return await new Promise<Response>(() => {});
+      if (call.method === "POST" && call.url.includes("/session/ses_config_timeout/message")) {
+        return null;
       }
-      if (method === "POST" && url.includes("/abort")) {
-        return new Response(JSON.stringify(true), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+      if (call.method === "POST" && call.url.includes("/abort")) {
+        return { body: true };
       }
-      if (method === "DELETE") {
-        return new Response(JSON.stringify(true), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+      if (call.method === "DELETE") {
+        return { body: true };
       }
-      throw new Error(`unexpected fetch: ${method} ${url}`);
-    }) as typeof fetch;
-    mock = {
-      calls: [],
-      restore: () => {
-        globalThis.fetch = originalFetch;
-      },
-    };
+      throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
+    });
 
     try {
-      const client = createV2Client("http://127.0.0.1:9999");
+      const client = createV2Client(mock.url);
       await expect(
         generateStructuredOutput({
           client,
@@ -1396,45 +1340,23 @@ describe("generateStructuredOutput tool isolation (issue #189)", () => {
   it("includes actionable provider-loop guidance in the timeout error", async () => {
     setStructuredOutputTimeoutMsForTests(20);
 
-    const original = globalThis.fetch;
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const req =
-        input instanceof Request
-          ? input
-          : new Request(typeof input === "string" ? input : input.toString(), init);
-      const url = req.url;
-      const method = req.method.toUpperCase();
-      if (method === "POST" && url.endsWith("/session")) {
-        return new Response(JSON.stringify({ id: "ses_timeout_msg" }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+    mock = startHostServer((call) => {
+      if (call.method === "POST" && call.url.endsWith("/session")) {
+        return { body: { id: "ses_timeout_msg" } };
       }
-      if (method === "POST" && url.includes("/session/ses_timeout_msg/message")) {
-        return await new Promise<Response>(() => {});
+      if (call.method === "POST" && call.url.includes("/session/ses_timeout_msg/message")) {
+        return null;
       }
-      if (method === "POST" && url.includes("/abort")) {
-        return new Response(JSON.stringify(true), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+      if (call.method === "POST" && call.url.includes("/abort")) {
+        return { body: true };
       }
-      if (method === "DELETE") {
-        return new Response(JSON.stringify(true), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+      if (call.method === "DELETE") {
+        return { body: true };
       }
-      throw new Error(`unexpected fetch: ${method} ${url}`);
-    }) as typeof fetch;
-    mock = {
-      calls: [],
-      restore: () => {
-        globalThis.fetch = original;
-      },
-    };
+      throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
+    });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await expect(
       generateStructuredOutput({
         client,
@@ -1450,50 +1372,33 @@ describe("generateStructuredOutput tool isolation (issue #189)", () => {
   it("noteStructuredOutputStep aborts after STRUCTURED_OUTPUT_MAX_STEPS on a live session (#278)", async () => {
     setStructuredOutputTimeoutMsForTests(5_000);
 
-    let releasePrompt!: (value: Response) => void;
-    const promptGate = new Promise<Response>((resolve) => {
+    let releasePrompt!: (response: HostResponse) => void;
+    const promptGate = new Promise<HostResponse>((resolve) => {
       releasePrompt = resolve;
     });
+    let onMessageArrived!: () => void;
+    const messageArrived = new Promise<void>((resolve) => {
+      onMessageArrived = resolve;
+    });
 
-    const original = globalThis.fetch;
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const req =
-        input instanceof Request
-          ? input
-          : new Request(typeof input === "string" ? input : input.toString(), init);
-      const url = req.url;
-      const method = req.method.toUpperCase();
-      if (method === "POST" && url.endsWith("/session")) {
-        return new Response(JSON.stringify({ id: "ses_steps" }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+    mock = startHostServer((call) => {
+      if (call.method === "POST" && call.url.endsWith("/session")) {
+        return { body: { id: "ses_steps" } };
       }
-      if (method === "POST" && url.includes("/session/ses_steps/message")) {
-        return await promptGate;
+      if (call.method === "POST" && call.url.includes("/session/ses_steps/message")) {
+        onMessageArrived();
+        return promptGate;
       }
-      if (method === "POST" && url.includes("/abort")) {
-        return new Response(JSON.stringify(true), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+      if (call.method === "POST" && call.url.includes("/abort")) {
+        return { body: true };
       }
-      if (method === "DELETE") {
-        return new Response(JSON.stringify(true), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+      if (call.method === "DELETE") {
+        return { body: true };
       }
-      throw new Error(`unexpected fetch: ${method} ${url}`);
-    }) as typeof fetch;
-    mock = {
-      calls: [],
-      restore: () => {
-        globalThis.fetch = original;
-      },
-    };
+      throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
+    });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     const pending = generateStructuredOutput({
       client,
       providerID: "anthropic",
@@ -1503,10 +1408,7 @@ describe("generateStructuredOutput tool isolation (issue #189)", () => {
       schema,
     });
 
-    // Wait until the internal session is marked.
-    for (let i = 0; i < 50 && !isInternalStructuredSession("ses_steps"); i++) {
-      await Bun.sleep(10);
-    }
+    await messageArrived;
     expect(isInternalStructuredSession("ses_steps")).toBe(true);
 
     expect(noteStructuredOutputStep("ses_steps")).toEqual({
@@ -1526,15 +1428,12 @@ describe("generateStructuredOutput tool isolation (issue #189)", () => {
     });
     expect(STRUCTURED_OUTPUT_MAX_STEPS).toBe(2);
 
-    releasePrompt(
-      new Response(
-        JSON.stringify({
-          info: { error: { name: "AbortError", data: { message: "Aborted" } } },
-          parts: [],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
-      )
-    );
+    releasePrompt({
+      body: {
+        info: { error: { name: "AbortError", data: { message: "Aborted" } } },
+        parts: [],
+      },
+    });
 
     await expect(pending).rejects.toThrow(/aborted after 3 steps/);
     expect(takeStructuredOutputStepAbortError("ses_steps")).toBeUndefined();
@@ -1542,7 +1441,7 @@ describe("generateStructuredOutput tool isolation (issue #189)", () => {
 
   it("tracks internal session IDs only while the prompt is in flight", async () => {
     let sawDuringPrompt = false;
-    mock = installFetchMock((call) => {
+    mock = startHostServer((call) => {
       if (call.method === "POST" && call.url.endsWith("/session")) {
         return { body: { id: "ses_track" } };
       }
@@ -1561,7 +1460,7 @@ describe("generateStructuredOutput tool isolation (issue #189)", () => {
       throw new Error(`unexpected fetch: ${call.method} ${call.url}`);
     });
 
-    const client = createV2Client("http://127.0.0.1:9999");
+    const client = createV2Client(mock.url);
     await generateStructuredOutput({
       client,
       providerID: "github-copilot",

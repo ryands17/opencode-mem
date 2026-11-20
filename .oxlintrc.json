@@ -1,0 +1,41 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "ignorePatterns": [
+    "coverage/**",
+    "dist/**",
+    "out/**",
+    "github-site/.astro/**",
+    "github-site/dist/**",
+    "github-site/src/content/docs/**",
+    "github-site/src/generated/**",
+    "web/dist/**"
+  ],
+  "env": {
+    "browser": true,
+    "node": true
+  },
+  "globals": {
+    "Bun": "readonly"
+  },
+  "jsPlugins": [
+    { "name": "landmines-testing", "specifier": "@interfere/landmines/testing" },
+    { "name": "landmines-style", "specifier": "@interfere/landmines/style" }
+  ],
+  "rules": {
+    "typescript/no-explicit-any": "off",
+    "typescript/no-unused-vars": [
+      "error",
+      {
+        "argsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_"
+      }
+    ],
+    "landmines-testing/no-fixed-sleep": "error",
+    "landmines-testing/no-flake-masking": "error",
+    "landmines-testing/no-test-doubles": "error",
+    "landmines-testing/no-unsignaled-poll": "error",
+    "landmines-testing/strict-msw": "error",
+    "landmines-style/no-comments": ["error", { "publicApi": ["/src/"] }]
+  }
+}

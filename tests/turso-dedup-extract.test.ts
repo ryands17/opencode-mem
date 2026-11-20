@@ -63,7 +63,6 @@ describe("turso dedup vector_extract", () => {
     expect(
       result.nearDuplicateGroups.length + result.exactDuplicatesDeleted
     ).toBeGreaterThanOrEqual(0);
-    // Near-dup group should be detected when vectors are highly similar
     expect(result.nearDuplicateGroups.length).toBeGreaterThanOrEqual(1);
   });
 });

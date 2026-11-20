@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { AnthropicMessagesProvider } from "../src/services/ai/providers/anthropic-messages.js";
 import type { ChatCompletionTool } from "../src/services/ai/tools/tool-schema.js";
 
@@ -40,64 +40,78 @@ class FakeSessionManager {
   }
 }
 
-describe("AnthropicMessagesProvider", () => {
-  const originalFetch = globalThis.fetch;
+type RecordedRequest = {
+  url: string;
+  path: string;
+  method: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+};
 
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
+function makeServer(respond: () => Response | Promise<Response>) {
+  const requests: RecordedRequest[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = JSON.parse((await req.text()) || "{}") as Record<string, unknown>;
+      requests.push({
+        url: req.url,
+        path: new URL(req.url).pathname,
+        method: req.method,
+        headers: Object.fromEntries(req.headers.entries()),
+        body,
+      });
+      return respond();
+    },
   });
+  return { server, requests, url: String(server.url) };
+}
 
+describe("AnthropicMessagesProvider", () => {
   it("sends required max_tokens in Anthropic message requests", async () => {
-    let capturedBody: Record<string, unknown> | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      capturedBody = JSON.parse(String(init?.body ?? "{}"));
-      return {
-        ok: false,
-        status: 400,
-        statusText: "Bad Request",
-        text: async () => "bad request",
-      } as Response;
-    }) as typeof fetch;
-
-    const provider = new AnthropicMessagesProvider(
-      {
-        model: "claude-3-5-sonnet-latest",
-        apiUrl: "https://api.anthropic.com/v1",
-        apiKey: "test-key",
-      },
-      new FakeSessionManager() as any
+    const { server, url, requests } = makeServer(
+      () => new Response("bad request", { status: 400 })
     );
+    try {
+      const provider = new AnthropicMessagesProvider(
+        {
+          model: "claude-3-5-sonnet-latest",
+          apiUrl: url,
+          apiKey: "test-key",
+        },
+        new FakeSessionManager() as any
+      );
 
-    await provider.executeToolCall("system", "user", toolSchema, "session-id");
+      await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    expect(capturedBody).toBeDefined();
-    expect(capturedBody?.max_tokens).toBeDefined();
+      const capturedBody = requests[0]?.body;
+      expect(capturedBody).toBeDefined();
+      expect(capturedBody?.max_tokens).toBeDefined();
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("uses configured maxTokens when provided", async () => {
-    let capturedBody: Record<string, unknown> | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      capturedBody = JSON.parse(String(init?.body ?? "{}"));
-      return {
-        ok: false,
-        status: 400,
-        statusText: "Bad Request",
-        text: async () => "bad request",
-      } as Response;
-    }) as typeof fetch;
-
-    const provider = new AnthropicMessagesProvider(
-      {
-        model: "claude-3-5-sonnet-latest",
-        apiUrl: "https://api.anthropic.com/v1",
-        apiKey: "test-key",
-        maxTokens: 2048,
-      },
-      new FakeSessionManager() as any
+    const { server, url, requests } = makeServer(
+      () => new Response("bad request", { status: 400 })
     );
+    try {
+      const provider = new AnthropicMessagesProvider(
+        {
+          model: "claude-3-5-sonnet-latest",
+          apiUrl: url,
+          apiKey: "test-key",
+          maxTokens: 2048,
+        },
+        new FakeSessionManager() as any
+      );
 
-    await provider.executeToolCall("system", "user", toolSchema, "session-id");
+      await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    expect(capturedBody?.max_tokens).toBe(2048);
+      expect(requests[0]?.body.max_tokens).toBe(2048);
+    } finally {
+      server.stop(true);
+    }
   });
 });

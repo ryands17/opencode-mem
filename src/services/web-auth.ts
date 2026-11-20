@@ -99,9 +99,7 @@ function safeOsUsername(): string {
   try {
     const info = userInfo();
     if (info.username && info.username.length > 0) return info.username;
-  } catch {
-    // userInfo can throw on some sandboxes; fall through to env fallbacks.
-  }
+  } catch {}
   if (process.env.USER && process.env.USER.length > 0) return process.env.USER;
   if (process.env.USERNAME && process.env.USERNAME.length > 0) return process.env.USERNAME;
   return "user";
@@ -110,7 +108,7 @@ function safeOsUsername(): string {
 function constantTimeEquals(provided: string, expected: Buffer): boolean {
   const providedBuf = Buffer.from(provided ?? "", "utf8");
   if (providedBuf.length !== expected.length) {
-    // Run a dummy compare so the call duration stays independent of length.
+    // WARNING: keep the dummy compare; removing it leaks mismatch via call duration.
     timingSafeEqual(expected, expected);
     return false;
   }

@@ -1,25 +1,3 @@
-/**
- * Structured output via the opencode HTTP server.
- *
- * Replaces the older auth.json/OAuth-juggling flow. Instead of forging
- * requests to provider HTTP endpoints ourselves, we delegate to the
- * running opencode server: it already owns the user's auth (any provider,
- * including github-copilot personal/business), token refresh, and provider
- * routing.
- *
- * Per call we create a transient session, prompt it with a JSON schema,
- * then delete the session so it does not pollute the user's TUI session
- * list.
- *
- * Internal capture sessions are least-privilege (issue #189): ordinary
- * agent tools are denied, only StructuredOutput is allowed, a dedicated
- * agent caps steps, and a hard timeout fails closed.
- *
- * The primary transport is the authenticated v2 SDK client initialized from
- * the plugin host's client configuration. A raw fetch fallback remains for
- * older SDK builds that do not expose the v2 session methods.
- */
-
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -56,10 +34,6 @@ export const STRUCTURED_OUTPUT_MAX_STEPS = 2;
 export const STRUCTURED_OUTPUT_DEFAULT_RETRY_COUNT = 1;
 
 let _structuredOutputTimeoutOverrideMs: number | undefined;
-// Configured timeout (CONFIG.opencodeTimeoutMs), injected by the plugin init
-// instead of importing config.js here: the provider module is bundled into a
-// single-file lazy loader whose import graph must stay free of config side
-// effects (config creation banner, DATA_DIR mkdir) for subprocess gates.
 let _structuredOutputConfiguredMs: number | undefined;
 
 /**
@@ -78,10 +52,6 @@ export function setStructuredOutputTimeoutConfig(ms: number): void {
   _structuredOutputConfiguredMs = ms;
 }
 
-/**
- * Effective structured-output prompt timeout: the test override wins, then
- * the configured value, then the hard-coded default.
- */
 function effectiveStructuredOutputTimeoutMs(): number {
   return (
     _structuredOutputTimeoutOverrideMs ??
@@ -116,8 +86,6 @@ let _v2Client: OpencodeClient | undefined;
 let _v2BaseUrl: string | undefined;
 let _hostFetch: typeof fetch | undefined;
 let _useSdkTransport = false;
-// Registered by the plugin init so a gate miss can force one provider-directory
-// refresh before failing (late host provider registration).
 let _connectedProvidersRefresher: (() => Promise<void>) | undefined;
 
 export function setHostFetch(customFetch: typeof fetch): void {
@@ -158,16 +126,12 @@ export async function ensureProviderConnected(providerName: string): Promise<boo
   if (!refresher) return false;
   try {
     await refresher();
-  } catch {
-    // The refresher logs; a failed refresh keeps the previous set.
-  }
+  } catch {}
   return _connectedProviders.has(providerName);
 }
 
 export function setV2Client(client: OpencodeClient): void {
   _v2Client = client;
-  // Native v2 adapters pass a session-capable client without a server URL.
-  // Enable the SDK transport path so structured output does not require createV2Client.
   if (hasV2SessionClient(client)) {
     _useSdkTransport = true;
   }
@@ -277,27 +241,19 @@ function sessionPromptFields(args: {
 }): Record<string, unknown> {
   return {
     model: { providerID: args.providerID, modelID: args.modelID },
-    // The V1 session prompt body carries the reasoning variant as a sibling
-    // of `model` (SessionPromptData.body.variant), not inside model.
     ...(args.variant ? { variant: args.variant } : {}),
     agent: STRUCTURED_OUTPUT_AGENT,
     system: args.systemPrompt,
     parts: [{ type: "text", text: args.userPrompt }],
     tools: STRUCTURED_OUTPUT_TOOLS,
-    // `noReply` suppresses assistant generation in current OpenCode builds,
-    // which also suppresses `info.structured_output`; structured capture needs
-    // the assistant run even though the temporary session is deleted afterward.
     format: {
       type: "json_schema",
       schema: args.jsonSchema,
-      // Bound schema retries so Claude-auth / incompatible providers fail
-      // closed instead of spinning until the 90s timeout (#278).
       retryCount: args.retryCount ?? STRUCTURED_OUTPUT_DEFAULT_RETRY_COUNT,
     },
   };
 }
 
-/** Tools-off prompt body: plain text JSON (no format:json_schema / forced tools). */
 function sessionTextJsonPromptFields(args: {
   providerID: string;
   modelID: string;
@@ -377,7 +333,6 @@ export interface StructuredOutputOptions<T> {
   retryCount?: number;
 }
 
-/** Last host-reported session model from `chat.params` / the V2 context hook. */
 let rememberedSessionModel: { providerID: string; modelID: string } | undefined;
 
 /**
@@ -433,7 +388,6 @@ function readRecentOpencodeModel(
   preferredProvider?: string
 ): { providerID: string; modelID: string } | undefined {
   try {
-    // OpenCode state path mirrors `opencode debug paths` → state.
     const stateDir = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
     const modelPath = join(stateDir, "opencode", "model.json");
     if (!existsSync(modelPath)) return undefined;
@@ -586,7 +540,6 @@ async function generateJsonSchemaViaFetch<T>(
     try {
       await deleteSession(base, sessionID, args.directory);
     } catch {
-      // intentionally swallowed
     } finally {
       untrackInternalCaptureSession(sessionID);
     }
@@ -629,7 +582,6 @@ async function generateTextJsonViaFetch<T>(
     try {
       await deleteSession(base, sessionID, args.directory);
     } catch {
-      // intentionally swallowed
     } finally {
       untrackInternalCaptureSession(sessionID);
     }
@@ -696,7 +648,6 @@ async function generateViaSdkClient<T>(
         ...(args.directory ? { directory: args.directory } : {}),
       });
     } catch {
-      // Best-effort cleanup for the transient capture session.
     } finally {
       untrackInternalCaptureSession(sessionID);
     }
@@ -757,7 +708,6 @@ async function generateTextJsonViaSdkClient<T>(
         ...(args.directory ? { directory: args.directory } : {}),
       });
     } catch {
-      // Best-effort cleanup for the transient capture session.
     } finally {
       untrackInternalCaptureSession(sessionID);
     }
@@ -782,9 +732,7 @@ async function withStructuredOutputTimeout<T>(
     if (error instanceof Error && error.message.includes("structured-output timed out after")) {
       try {
         await onTimeout();
-      } catch {
-        // best-effort abort
-      }
+      } catch {}
     }
     throw error;
   } finally {
@@ -931,9 +879,7 @@ async function abortSession(base: string, sessionID: string, directory?: string)
   const url = `${base}/session/${encodeURIComponent(sessionID)}/abort${buildQuery(directory)}`;
   try {
     await activeFetch()(new Request(url, { method: "POST" }));
-  } catch {
-    // best-effort
-  }
+  } catch {}
 }
 
 async function deleteSession(base: string, sessionID: string, directory?: string): Promise<void> {
@@ -948,8 +894,6 @@ async function deleteSession(base: string, sessionID: string, directory?: string
       { cause: error }
     );
   }
-  // DELETE /session/:id returns boolean. We only care that it ran; failures
-  // are swallowed at the call site.
   if (!res.ok) {
     throw new Error(
       `opencode-mem: opencode DELETE /session/{id} failed at ${diagnosticUrl(url)} (${responseStatus(res)})`

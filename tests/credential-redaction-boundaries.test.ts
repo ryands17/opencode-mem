@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const url = (path: string) => JSON.stringify(new URL(`../src/${path}`, import.meta.url).href);
-// Fabricated fixtures, never usable credentials or data from a user's installation.
 const secret = `ghp_${"a1B2".repeat(9)}`;
 
 function scenario(body: string) {
@@ -48,7 +47,6 @@ console.log(JSON.stringify({ prompt: prompt.content, evidence, replay }));
 await tursoConnectionManager.closeConnection(process.env.HOME + "/user-prompts.db");
 `);
     expect(JSON.stringify(result)).not.toContain(secret);
-    // A token straddling the persistence cap must not leave a recognizable prefix.
     expect(JSON.stringify(result)).not.toContain("ghp_");
     expect(result.prompt).toContain("Fix auth.ts using");
     expect(result.replay).toContain("Test succeeded");
@@ -163,7 +161,6 @@ console.log(JSON.stringify({ requests, writes, logs }));
       );
       expect(result.writes.length).toBe(1);
       expect(JSON.stringify(result)).not.toContain(secret);
-      // Provider output normalizes tags to lowercase; it must not bypass redaction.
       expect(JSON.stringify(result)).not.toContain(secret.toLowerCase());
       expect(JSON.stringify(result)).not.toContain("ghp_");
       expect(JSON.stringify(result)).not.toContain("abc123456789");

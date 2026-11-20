@@ -66,7 +66,6 @@
 
   const themeStore = createTheme();
   const isDark = $derived(themeStore.theme === "dark");
-  /** Collapse is desktop-only; mobile drawer always shows labels. */
   const iconOnly = $derived(collapsed && !open);
 
   function setOpen(next: boolean) {

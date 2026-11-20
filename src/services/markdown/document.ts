@@ -93,9 +93,7 @@ function parseTagsValue(raw: string): string[] {
       if (Array.isArray(parsed)) {
         return parsed.map((t) => String(t).trim()).filter(Boolean);
       }
-    } catch {
-      /* fall through */
-    }
+    } catch {}
     return trimmed
       .slice(1, -1)
       .split(",")

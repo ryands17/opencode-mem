@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -94,16 +94,14 @@ describe("cleanupTursoTestDirectory", () => {
     async () => {
       const dir = mkdtempSync(join(tmpdir(), "opencode-mem-cleanup-"));
       const db = new Database(join(dir, "locked.db"));
-      const realWarn = console.warn;
-      const warned: unknown[][] = [];
-      console.warn = (...args: unknown[]) => warned.push(args);
+      const warnSpy = spyOn(console, "warn");
       try {
         await cleanupTursoTestDirectory(dir);
       } finally {
-        console.warn = realWarn;
         db.close();
+        warnSpy.mockRestore();
       }
-      expect(warned.length).toBeGreaterThan(0);
+      expect(warnSpy.mock.calls.length).toBeGreaterThan(0);
     }
   );
 });

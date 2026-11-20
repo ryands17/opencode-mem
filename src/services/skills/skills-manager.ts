@@ -76,8 +76,6 @@ export class SkillsManager {
 
   private async getDb(): Promise<TursoDb> {
     await this.initialize();
-    // Connection manager is authoritative: boot migrators may close/replace
-    // skills.db underneath a cached TursoDb handle (encryption/engine rewrite).
     if (this.db) {
       const current = await tursoConnectionManager.getConnection(this.dbPath);
       if (current === this.db) {
@@ -255,7 +253,6 @@ export class SkillsManager {
       skills: enabled.map((skill) => ({
         name: skill.id,
         version: String(skill.updatedAt),
-        // OpenCode fetches `{base}/{name}/{file}` — named .md form → skill id = name.
         files: [`${skill.id}.md`],
       })),
     };

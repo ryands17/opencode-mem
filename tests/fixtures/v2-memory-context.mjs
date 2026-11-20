@@ -65,7 +65,6 @@ mock.module(moduleUrl("services/tags"), () => ({
   }),
 }));
 mock.module(moduleUrl("services/context"), () => ({
-  // Mirror production: empty project memories yield "" unless a profile block exists.
   formatContextForPrompt: async (_user, data) => {
     const results = data?.results ?? [];
     for (const memory of results) {
@@ -219,7 +218,6 @@ output.captures = captures.map(([sessionID, messageID, , text]) => ({
   messageID,
   text,
 }));
-// V1 still injects synthetic message parts according to its history policy.
 const v1 = {
   message: { id: "v1-first" },
   parts: [{ type: "text", text: "v1 user prompt" }],
@@ -233,7 +231,6 @@ const later = {
 };
 await plugin["chat.message"]({ sessionID: "v1" }, later);
 output.v1Later = later.parts;
-// Relevant-mode failure fallback uses the same per-turn cache as semantic recall.
 config.chatMessage.recall = "relevant";
 const lookupsBeforeFallback = lookupCount;
 memories = [

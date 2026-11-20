@@ -146,7 +146,6 @@ export async function ensureSqldRunning(
     if (run.exitCode !== 0) {
       const detail = run.stderr || `docker run exited ${run.exitCode}`;
       if (/already in use|conflict/i.test(detail)) {
-        // Another OpenCode instance created it at the same time; reuse it.
         onProgress?.("sqld container was created by another process; reusing it...");
       } else {
         throw new Error(`Failed to start local sqld: ${detail}`);

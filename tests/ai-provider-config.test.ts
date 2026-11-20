@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,8 +48,34 @@ class FakeSessionManager {
   updateSession(): void {}
 }
 
+type RecordedRequest = {
+  url: string;
+  path: string;
+  method: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+};
+
+function makeServer(respond: () => Response | Promise<Response>) {
+  const requests: RecordedRequest[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = JSON.parse((await req.text()) || "{}") as Record<string, unknown>;
+      requests.push({
+        url: req.url,
+        path: new URL(req.url).pathname,
+        method: req.method,
+        headers: Object.fromEntries(req.headers.entries()),
+        body,
+      });
+      return respond();
+    },
+  });
+  return { server, requests, url: String(server.url) };
+}
+
 describe("AI provider config", () => {
-  const originalFetch = globalThis.fetch;
   const originalLogFileEnv = process.env.OPENCODE_MEM_LOG_FILE;
   const logDir = mkdtempSync(join(tmpdir(), "opencode-mem-logs-"));
   const logFile = join(logDir, "opencode-mem.log");
@@ -58,10 +84,6 @@ describe("AI provider config", () => {
 
   beforeEach(() => {
     rmSync(logFile, { force: true });
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
   });
 
   afterAll(() => {
@@ -309,146 +331,130 @@ describe("AI provider config", () => {
   });
 
   it("omits temperature for openai-chat when memoryTemperature is false", async () => {
-    let capturedBody: Record<string, unknown> | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      capturedBody = JSON.parse(String(init?.body ?? "{}"));
-      return {
-        ok: false,
-        status: 400,
-        statusText: "Bad Request",
-        text: async () => "bad request",
-      } as Response;
-    }) as typeof fetch;
-
-    const provider = new OpenAIChatCompletionProvider(
-      {
-        model: "gpt-5-nano",
-        apiUrl: "https://api.openai.com/v1",
-        apiKey: "sk-test",
-        memoryTemperature: false,
-      },
-      new FakeSessionManager() as any
+    const { server, url, requests } = makeServer(
+      () => new Response("bad request", { status: 400 })
     );
+    try {
+      const provider = new OpenAIChatCompletionProvider(
+        {
+          model: "gpt-5-nano",
+          apiUrl: url,
+          apiKey: "sk-test",
+          memoryTemperature: false,
+        },
+        new FakeSessionManager() as any
+      );
 
-    await provider.executeToolCall("system", "user", toolSchema, "session-id");
+      await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    expect(capturedBody).toBeDefined();
-    expect(capturedBody?.temperature).toBeUndefined();
+      const capturedBody = requests[0]?.body;
+      expect(capturedBody).toBeDefined();
+      expect(capturedBody?.temperature).toBeUndefined();
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("uses provided temperature for openai-chat when explicitly configured", async () => {
-    let capturedBody: Record<string, unknown> | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      capturedBody = JSON.parse(String(init?.body ?? "{}"));
-      return {
-        ok: false,
-        status: 400,
-        statusText: "Bad Request",
-        text: async () => "bad request",
-      } as Response;
-    }) as typeof fetch;
-
-    const provider = new OpenAIChatCompletionProvider(
-      {
-        model: "gpt-4.1-mini",
-        apiUrl: "https://api.openai.com/v1",
-        apiKey: "sk-test",
-        memoryTemperature: 1,
-      },
-      new FakeSessionManager() as any
+    const { server, url, requests } = makeServer(
+      () => new Response("bad request", { status: 400 })
     );
+    try {
+      const provider = new OpenAIChatCompletionProvider(
+        {
+          model: "gpt-4.1-mini",
+          apiUrl: url,
+          apiKey: "sk-test",
+          memoryTemperature: 1,
+        },
+        new FakeSessionManager() as any
+      );
 
-    await provider.executeToolCall("system", "user", toolSchema, "session-id");
+      await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    expect(capturedBody?.temperature).toBe(1);
+      expect(requests[0]?.body.temperature).toBe(1);
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("logs provider and model context for openai-chat API errors", async () => {
-    globalThis.fetch = (async () => {
-      return {
-        ok: false,
-        status: 400,
-        statusText: "Bad Request",
-        text: async () => "bad request",
-      } as Response;
-    }) as unknown as typeof fetch;
+    const { server, url } = makeServer(() => new Response("bad request", { status: 400 }));
+    try {
+      const beforeLog = existsSync(logFile) ? readFileSync(logFile, "utf-8") : "";
 
-    const beforeLog = existsSync(logFile) ? readFileSync(logFile, "utf-8") : "";
+      const provider = new OpenAIChatCompletionProvider(
+        {
+          model: "gpt-5-nano",
+          apiUrl: url,
+          apiKey: "sk-test",
+          memoryTemperature: false,
+        },
+        new FakeSessionManager() as any
+      );
 
-    const provider = new OpenAIChatCompletionProvider(
-      {
-        model: "gpt-5-nano",
-        apiUrl: "https://api.openai.com/v1",
-        apiKey: "sk-test",
-        memoryTemperature: false,
-      },
-      new FakeSessionManager() as any
-    );
+      await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    await provider.executeToolCall("system", "user", toolSchema, "session-id");
+      const afterLog = readFileSync(logFile, "utf-8");
+      const appendedLog = afterLog.slice(beforeLog.length);
 
-    const afterLog = readFileSync(logFile, "utf-8");
-    const appendedLog = afterLog.slice(beforeLog.length);
-
-    expect(appendedLog).toContain('"provider":"openai-chat"');
-    expect(appendedLog).toContain('"model":"gpt-5-nano"');
+      expect(appendedLog).toContain('"provider":"openai-chat"');
+      expect(appendedLog).toContain('"model":"gpt-5-nano"');
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("logs provider and model context for response-body API errors", async () => {
-    globalThis.fetch = (async () => {
-      return {
-        ok: true,
-        json: async () => ({ status: 500, msg: "body failure" }),
-      } as Response;
-    }) as unknown as typeof fetch;
+    const { server, url } = makeServer(() => Response.json({ status: 500, msg: "body failure" }));
+    try {
+      const beforeLog = existsSync(logFile) ? readFileSync(logFile, "utf-8") : "";
 
-    const beforeLog = existsSync(logFile) ? readFileSync(logFile, "utf-8") : "";
+      const provider = new OpenAIChatCompletionProvider(
+        {
+          model: "gpt-5-nano",
+          apiUrl: url,
+          apiKey: "sk-test",
+          memoryTemperature: false,
+        },
+        new FakeSessionManager() as any
+      );
 
-    const provider = new OpenAIChatCompletionProvider(
-      {
-        model: "gpt-5-nano",
-        apiUrl: "https://api.openai.com/v1",
-        apiKey: "sk-test",
-        memoryTemperature: false,
-      },
-      new FakeSessionManager() as any
-    );
+      await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    await provider.executeToolCall("system", "user", toolSchema, "session-id");
+      const afterLog = readFileSync(logFile, "utf-8");
+      const appendedLog = afterLog.slice(beforeLog.length);
 
-    const afterLog = readFileSync(logFile, "utf-8");
-    const appendedLog = afterLog.slice(beforeLog.length);
-
-    expect(appendedLog).toContain('"provider":"openai-chat"');
-    expect(appendedLog).toContain('"model":"gpt-5-nano"');
+      expect(appendedLog).toContain('"provider":"openai-chat"');
+      expect(appendedLog).toContain('"model":"gpt-5-nano"');
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("never sends temperature for openai-responses", async () => {
-    let capturedBody: Record<string, unknown> | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      capturedBody = JSON.parse(String(init?.body ?? "{}"));
-      return {
-        ok: false,
-        status: 400,
-        statusText: "Bad Request",
-        text: async () => "bad request",
-      } as Response;
-    }) as typeof fetch;
-
-    const provider = new OpenAIResponsesProvider(
-      {
-        model: "gpt-5-nano",
-        apiUrl: "https://api.openai.com/v1",
-        apiKey: "sk-test",
-        memoryTemperature: false,
-      },
-      new FakeSessionManager() as any
+    const { server, url, requests } = makeServer(
+      () => new Response("bad request", { status: 400 })
     );
+    try {
+      const provider = new OpenAIResponsesProvider(
+        {
+          model: "gpt-5-nano",
+          apiUrl: url,
+          apiKey: "sk-test",
+          memoryTemperature: false,
+        },
+        new FakeSessionManager() as any
+      );
 
-    await provider.executeToolCall("system", "user", toolSchema, "session-id");
+      await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    expect(capturedBody).toBeDefined();
-    expect(capturedBody?.temperature).toBeUndefined();
+      const capturedBody = requests[0]?.body;
+      expect(capturedBody).toBeDefined();
+      expect(capturedBody?.temperature).toBeUndefined();
+    } finally {
+      server.stop(true);
+    }
   });
 
   describe("applySafeExtraParams", () => {

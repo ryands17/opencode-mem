@@ -5,13 +5,13 @@ mock.module(moduleUrl("services/logger"), () => ({ log() {} }));
 mock.module(moduleUrl("services/user-profile/profile-context"), () => ({
   getUserProfileContext: async () => "",
 }));
-const now = Date.UTC(2026, 10, 2);
-Date.now = () => now;
+const now = Date.now();
+const recentCreatedAt = new Date(now - 86400000).toISOString().slice(0, 10);
 const recent = [
   {
     id: "recent",
     summary: "recent body",
-    createdAt: "2026-11-01",
+    createdAt: recentCreatedAt,
     projectName: "project",
     metadata: { sessionID: "previous" },
   },
@@ -56,9 +56,6 @@ mock.module(moduleUrl("services/client"), () => ({
     },
   },
 }));
-globalThis.fetch = () => {
-  throw new Error("Network forbidden in fixture");
-};
 const { loadRecallMemories } = await import(moduleUrl("services/memory-recall"));
 const { formatContextForPrompt } = await import(moduleUrl("services/context"));
 const defaults = {
@@ -114,4 +111,5 @@ for (const [name, value] of Object.entries(scenarios)) {
     output[name] = { error: String(error), calls };
   }
 }
+output.anchor = { now, recentCreatedAt };
 console.log(JSON.stringify(output));

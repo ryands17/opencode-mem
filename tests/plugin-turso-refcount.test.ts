@@ -44,7 +44,6 @@ describe("plugin Turso refcount (#443)", () => {
     expect(closedOnFirstRelease).toBe(false);
     expect(pluginTursoRefCount()).toBe(1);
 
-    // Sibling instance still live: same pooled handle, queries still work.
     expect(await tursoConnectionManager.getConnection(dbPath)).toBe(handleBefore);
     const prompt = await userPromptManager.getPromptById(id);
     expect(prompt?.content).toBe("hello");
@@ -78,9 +77,6 @@ describe("plugin Turso refcount (#443)", () => {
 
     const id = await userPromptManager.savePrompt("sess-b", "msg-b", "/tmp/p", "world");
 
-    // Fake a warmed-up embedding service so the close path has something to
-    // release. Remote embeddings hold no model in-process; dispose() just
-    // resets warmed-up state, so record calls directly.
     const { embeddingService } = await import("../src/services/embedding.js");
     const released: string[] = [];
     const previous = {
@@ -96,7 +92,6 @@ describe("plugin Turso refcount (#443)", () => {
       await memoryClient.close();
       expect(pluginTursoRefCount()).toBe(1);
       expect((await userPromptManager.getPromptById(id))?.content).toBe("world");
-      // Sibling instance still live: the embedding service must stay warmed up.
       expect(released).toEqual([]);
 
       await memoryClient.close();

@@ -184,7 +184,6 @@ try {
   }
   await emit(scenario.deletedCheckpoint ? "session.deleted" : "session.idle", { sessionID: "s" });
   if (scenario.lateAfterCheckpoint) {
-    // Buffered late events must not rebind and flip ready back to 0.
     await emit("message.updated", {
       info: { id: "a-late", sessionID: "s", role: "assistant", parentID: "u" },
     });
@@ -228,9 +227,6 @@ try {
     restoredSessions = await restored.getPendingCaptureSessions(project);
     recorder = new CaptureEvidenceRecorder(project);
   }
-  // Prefer durable evidence for deleted-session recovery. The olderPending
-  // starvation case and liveHost preference leave preferSavedEvidence off so
-  // the live transcript path runs first.
   const captureOpts = {
     preferSavedEvidence: !scenario.olderPending && !scenario.liveHost,
   };

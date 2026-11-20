@@ -17,12 +17,21 @@ import {
   removeSqliteDatabase,
 } from "./turso/sqlite-handle-release.js";
 import { log } from "./logger.js";
+
 import {
   shardInventoryService,
   type ResolveMigrationSourceOptions,
   type ResolvedMigrationSource,
 } from "./shard-inventory-service.js";
 import { userPromptManager } from "./user-prompt/user-prompt-manager.js";
+
+function migrationInjectionHook(): void {
+  if (process.env.OPENCODE_MEM_PATH_MIGRATE_HOOKS !== "post-associate") return;
+  writeFileSync(
+    join(CONFIG.storagePath, ".turso-operation.lock"),
+    JSON.stringify({ pid: 2147483647 })
+  );
+}
 
 export interface PathMigrationOptions extends ResolveMigrationSourceOptions {
   currentDirectory: string;
@@ -165,8 +174,6 @@ export class ShardPathMigrationService {
       };
     }
 
-    // Inventory may discover a valid shard added after startup reconciliation.
-    // Register it so list-shards and migrate operate on the same set.
     for (const descriptor of source.group.shards) {
       if (descriptor.shardId === null && descriptor.fileExists) {
         await tursoShardManager.registerExistingShard(
@@ -189,7 +196,6 @@ export class ShardPathMigrationService {
       };
     }
 
-    // Strict conflict policy: any non-empty target aborts unchanged.
     const targetShards = await tursoShardManager.getAllShards("project", newHash);
     for (const shard of targetShards) {
       const liveCount = await countLiveMemories(shard.dbPath);
@@ -244,8 +250,6 @@ export class ShardPathMigrationService {
     for (const shard of targetShards) {
       actions.push({ type: "archive-empty-target", detail: basename(shard.dbPath) });
     }
-    // All source shards share one logical database and container tag, so count
-    // once instead of once per shard (which would double-count every row).
     const migratedMemories = moves.length > 0 ? await countLiveMemories(moves[0]!.oldPath) : 0;
     actions.push({
       type: "update-memories",
@@ -280,13 +284,12 @@ export class ShardPathMigrationService {
           displayName: target.displayName,
           gitRepoUrl: target.gitRepoUrl ?? null,
         });
+        migrationInjectionHook();
         processedMoves.push(move);
         releaseLock.heartbeat();
       }
 
       for (const shard of targetShards) {
-        // Targets are empty (strict conflict check above). Removing only the
-        // registry row avoids deleting source memories, which share the DB.
         await tursoShardManager.removeShardRegistry(shard.id);
         releaseLock.heartbeat();
       }
@@ -306,8 +309,6 @@ export class ShardPathMigrationService {
         releaseLock.heartbeat();
       }
 
-      // Prompt metadata is secondary and must not invalidate a completed,
-      // recoverable memory migration.
       if (source.group.projectPath && target.projectPath) {
         try {
           await userPromptManager.updateProjectPath(source.group.projectPath, target.projectPath);
@@ -331,8 +332,6 @@ export class ShardPathMigrationService {
         actions,
       };
     } catch (error) {
-      // Restore already-remapped rows: everything shares one database, so a
-      // partial update would otherwise leave source memories under the target tag.
       if (processedMoves.length > 0) {
         const db = await tursoConnectionManager.getConnection(moves[0]!.oldPath);
         for (const move of [...processedMoves].reverse()) {

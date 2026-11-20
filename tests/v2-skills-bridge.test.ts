@@ -22,12 +22,9 @@ describe("V2 skills bridge helpers", () => {
     const { skillsManager } = await import("../src/services/skills/skills-manager.js");
     skillsManager.reset();
     await tursoConnectionManager.closeAll();
-    await new Promise((r) => setTimeout(r, 50));
     try {
       rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // ignore
-    }
+    } catch {}
   });
 
   it("exposes absolute skill paths for OpenCode Skill.Info", async () => {
@@ -87,6 +84,9 @@ describe("V2 skills bridge helpers", () => {
 
     const registry = new Map<string, any>();
     let reloadCount = 0;
+    let signalSkillReload: (() => void) | null = null;
+    const nextSkillReload = () => new Promise<void>((resolve) => (signalSkillReload = resolve));
+    let skillReloaded = nextSkillReload();
     const hooks = new Map<string, (event: any) => Promise<void>>();
 
     const ctx = {
@@ -118,6 +118,7 @@ describe("V2 skills bridge helpers", () => {
         },
         reload: async () => {
           reloadCount++;
+          signalSkillReload?.();
         },
       },
       session: {
@@ -130,7 +131,6 @@ describe("V2 skills bridge helpers", () => {
           await new Promise<void>((resolve) =>
             signal.addEventListener("abort", () => resolve(), { once: true })
           );
-          // Satisfy require-yield; cleanup aborts before any events are needed.
           if (signal.aborted) yield null;
         },
       },
@@ -155,14 +155,15 @@ describe("V2 skills bridge helpers", () => {
       description: "Review PRs carefully",
       autoinvoke: false,
     });
-    await new Promise((r) => setTimeout(r, 50));
+    await skillReloaded;
 
     expect(registry.get("code-review")?.description).toBe("Review PRs carefully");
     expect(registry.get("code-review")?.autoinvoke).toBe(false);
     expect(reloadCount).toBeGreaterThan(0);
 
+    skillReloaded = nextSkillReload();
     await skillsManager.update("code-review", { enabled: false });
-    await new Promise((r) => setTimeout(r, 50));
+    await skillReloaded;
     expect(registry.has("code-review")).toBe(false);
 
     await cleanup();

@@ -1,15 +1,11 @@
 import { tursoVectorSearch } from "../src/services/turso/vector-search.js";
-import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { cleanupTursoTestDirectory, resetSqldState } from "./turso-test-utils.js";
 
-// Shard path migration does real file swaps of live SQLite files; on a loaded
-// Windows box the file-lock release can legitimately exceed the 5s default.
-const MIGRATION_TEST_TIMEOUT = 15000;
-const migrationTest = (name: string, fn: () => void | Promise<void>) =>
-  it(name, fn, MIGRATION_TEST_TIMEOUT);
+const migrationTest = (name: string, fn: () => void | Promise<void>) => it(name, fn);
 
 describe("shard path migration", () => {
   let baseDir: string;
@@ -111,7 +107,6 @@ describe("shard path migration", () => {
       "How does this project work?"
     );
 
-    // Simulate a directory move: remove the old project directory so only the stored path remains.
     const { rmSync } = await import("node:fs");
     rmSync(oldProjectDir, { recursive: true, force: true });
 
@@ -146,7 +141,6 @@ describe("shard path migration", () => {
       const db = await tursoConnectionManager.getConnection(shard.dbPath);
       allRows.push(...(await tursoVectorSearch.getAllMemories(db)));
     }
-    // Both logical shards alias one DB; count distinct rows, not per-shard reads.
     expect(new Set(allRows.map((row) => String(row.id))).size).toBe(2);
     for (const row of allRows) {
       expect(String(row.container_tag)).toBe(target.tag);
@@ -158,7 +152,6 @@ describe("shard path migration", () => {
       target.tag,
       20
     );
-    // list on first shard alone may be partial; check via inventory instead
     const { shardInventoryService } = await import("../src/services/shard-inventory-service.js");
     const inventory = await shardInventoryService.listShards(newProjectDir);
     const current = inventory.shards.find((shard) => shard.scopeHash === newHash);
@@ -276,15 +269,10 @@ describe("shard path migration", () => {
       const { tursoConnectionManager } =
         await import("../src/services/turso/connection-manager.js");
       const originals = await tursoShardManager.getAllShards("project", hash);
-      const update = tursoVectorSearch.updateProjectAssociation;
       const lockPath = join(CONFIG.storagePath, ".turso-operation.lock");
-      let staged = 0;
-      tursoVectorSearch.updateProjectAssociation = async function (...args) {
-        const result = await update.apply(this, args);
-        staged++;
-        writeFileSync(lockPath, JSON.stringify({ pid: 2147483647 }));
-        return result;
-      };
+      const updateSpy = spyOn(tursoVectorSearch, "updateProjectAssociation");
+      let stagedCalls = 0;
+      process.env.OPENCODE_MEM_PATH_MIGRATE_HOOKS = "post-associate";
       try {
         const { shardPathMigrationService } =
           await import("../src/services/shard-path-migration-service.js");
@@ -296,9 +284,11 @@ describe("shard path migration", () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain("ownership lost");
       } finally {
-        tursoVectorSearch.updateProjectAssociation = update;
+        delete process.env.OPENCODE_MEM_PATH_MIGRATE_HOOKS;
+        stagedCalls = updateSpy.mock.calls.length;
+        updateSpy.mockRestore();
       }
-      expect(staged).toBeGreaterThanOrEqual(1);
+      expect(stagedCalls).toBeGreaterThanOrEqual(1);
       expect(await tursoShardManager.getAllShards("project", hash)).toEqual(originals);
       const newHash = getProjectTagInfo(newProjectDir).tag.split("_").pop()!;
       expect(await tursoShardManager.getAllShards("project", newHash)).toHaveLength(0);

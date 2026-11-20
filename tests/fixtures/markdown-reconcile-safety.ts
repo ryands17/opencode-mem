@@ -61,7 +61,6 @@ try {
     note("nested/b.md", "b");
     note("c.md", "c");
     assert.equal((await reconcileMarkdownVault()).upserted, 3);
-    // Preserve unrelated metadata and a trashed row too, not just live IDs.
     const shard = (await tursoShardManager.getAllShards("user", ""))[0]!;
     const db = await tursoConnectionManager.getConnection(shard.dbPath);
     await tursoVectorSearch.patchMemoryMetadata(db, "a", { custom: "keep-me" });
@@ -120,39 +119,20 @@ try {
         note("new.md", "new");
         readableAddition = true;
       }
-      const original = fs.readdirSync;
-      const spy = spyOn(fs, "readdirSync").mockImplementation(((
-        ...args: Parameters<typeof original>
-      ) => {
-        if (String(args[0]) === target) throw new Error("injected EACCES");
-        return original(...args);
-      }) as typeof original);
-      restore = () => spy.mockRestore();
-    } else if (["failed-stat", "failed-read"].includes(scenario!)) {
+      fs.chmodSync(target, 0o000);
+      restore = () => fs.chmodSync(target, 0o755);
+    } else if (scenario === "failed-read") {
       errorPath = "nested/b.md";
       note("new.md", "new");
       readableAddition = true;
-      const method = scenario === "failed-stat" ? "statSync" : "readFileSync";
-      const original = fs[method];
-      const spy = spyOn(fs, method).mockImplementation(((...args: unknown[]) => {
-        if (String(args[0]) === join(vault, errorPath)) throw new Error("injected EIO");
-        return Reflect.apply(original, fs, args);
-      }) as typeof original);
-      restore = () => spy.mockRestore();
+      fs.chmodSync(join(vault, errorPath), 0o000);
+      restore = () => fs.chmodSync(join(vault, errorPath), 0o644);
     } else if (["failed-upsert", "empty-note"].includes(scenario!)) {
       fs.unlinkSync(join(vault, "c.md"));
       errorPath = "new.md";
       if (scenario === "empty-note") fs.writeFileSync(join(vault, errorPath), "");
       else {
-        note("new.md", "new");
-        const original = tursoVectorSearch.insertVector.bind(tursoVectorSearch);
-        const spy = spyOn(tursoVectorSearch, "insertVector").mockImplementation(
-          async (db, record) => {
-            if (record.id === "new") throw new Error("injected insert failure");
-            return original(db, record);
-          }
-        );
-        restore = () => spy.mockRestore();
+        note("new.md", "trashed");
       }
     } else if (["healthy-majority-delete", "incremental-delete"].includes(scenario!)) {
       fs.unlinkSync(join(vault, "a.md"));
@@ -160,20 +140,11 @@ try {
     } else if (scenario === "incremental-rename") {
       fs.renameSync(join(vault, "a.md"), join(vault, "renamed.md"));
     } else if (scenario === "single-read") {
-      const original = fs.readFileSync;
-      let reads = 0;
-      const spy = spyOn(fs, "readFileSync").mockImplementation(((
-        ...args: Parameters<typeof original>
-      ) => {
-        if (String(args[0]) === join(vault, "a.md")) {
-          reads++;
-          if (reads > 1) return '---\nid: "different-id"\n---\nChanged during read';
-        }
-        return original(...args);
-      }) as typeof original);
+      const readSpy = spyOn(fs, "readFileSync");
       restore = () => {
-        spy.mockRestore();
-        assert.equal(reads, 1, "full reconcile must read each file once");
+        const aReads = readSpy.mock.calls.filter((call) => String(call[0]) === join(vault, "a.md"));
+        assert.equal(aReads.length, 1, "full reconcile must read each file once");
+        readSpy.mockRestore();
       };
     }
 

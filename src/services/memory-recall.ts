@@ -192,7 +192,6 @@ export async function loadRecallMemories(opts: LoadRecallOptions): Promise<Recal
 
   const loadRelevant = async (): Promise<RecallMemory[] | null> => {
     const query = opts.queryText!.trim();
-    // Over-fetch so session/age filters and project boost can still fill the slot budget.
     const fetchLimit = Math.max(opts.maxMemories * 3, opts.maxMemories);
     let searchRes;
     try {
@@ -203,7 +202,6 @@ export async function loadRecallMemories(opts: LoadRecallOptions): Promise<Recal
     } catch {
       return null;
     }
-    // Partial-shard warnings remain successful searches, even with no matches.
     if (!searchRes.success) return null;
     let results = searchRes.results.map(searchResultToRecall);
     results = filterRecallResults(results, filters);
@@ -225,7 +223,6 @@ export async function loadRecallMemories(opts: LoadRecallOptions): Promise<Recal
       sessionID: opts.sessionID,
       requested: mode,
     });
-    // Return directly so both mode never repeats a short or failed recent load.
     try {
       return await loadRecent();
     } catch {
@@ -236,7 +233,6 @@ export async function loadRecallMemories(opts: LoadRecallOptions): Promise<Recal
 
   if (mode === "relevant") return relevant;
 
-  // both
   if (relevant.length >= opts.maxMemories) return relevant.slice(0, opts.maxMemories);
   const recent = await loadRecent();
   return mergeBoth(relevant, recent, opts.maxMemories);

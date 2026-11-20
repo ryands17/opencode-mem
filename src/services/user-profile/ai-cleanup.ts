@@ -136,10 +136,6 @@ interface AIMapping {
   removed: string[];
 }
 
-// The model controls this JSON; it may omit fields or return wrong types. Coerce to a
-// well-formed AIMapping so rebuildProfileUsing/generateDiff never call .map/.filter/.includes
-// on undefined. A missing or malformed mapping degrades to a no-op cleanup (all originals are
-// preserved as "unmentioned") rather than aborting or corrupting the profile.
 function normalizeAIMapping(raw: any): AIMapping {
   if (!raw || typeof raw !== "object") {
     log("AI cleanup: response missing valid mapping; treating as no-op", {
@@ -217,9 +213,6 @@ function formatForAI(item: IndexedProfileItem): Record<string, unknown> {
 async function callAICleanup(
   prompt: string
 ): Promise<{ profile: IndexedProfile; mapping: AIMapping }> {
-  // Use opencode internal session when opencodeProvider is configured (same pattern as auto-capture).
-  // When the client is available, surface OpenCode errors instead of masking them as
-  // "No AI provider configured" via a silent fallback (#177).
   if (CONFIG.opencodeProvider && CONFIG.opencodeModel) {
     const { getV2Client } = await loadOpencodeProvider();
     const v2Client = getV2Client();
@@ -366,11 +359,9 @@ async function callViaOpencodeWithClient(
           providerID: CONFIG.opencodeProvider || "bs-aigw",
           modelID: CONFIG.opencodeModel || "deepseek-v4-flash",
         },
-        // V1 prompt body: variant is a sibling of `model`, not inside it.
         ...(CONFIG.opencodeVariant ? { variant: CONFIG.opencodeVariant } : {}),
         system: systemPrompt,
         parts: [{ type: "text", text: prompt }],
-        // `noReply` suppresses assistant generation; cleanup needs the JSON reply (#177).
         noReply: false,
       }),
       TIMEOUT_MS,
@@ -396,9 +387,7 @@ async function callViaOpencodeWithClient(
   } finally {
     try {
       await v2Client.session.delete({ sessionID });
-    } catch {
-      // ignore cleanup failures for ephemeral sessions
-    }
+    } catch {}
   }
 }
 
@@ -476,10 +465,6 @@ export function rebuildProfileUsing(
     }
 
     if (mergedGroups.some((g) => g[0] === id)) {
-      // The merge accumulation below dereferences originalItem unconditionally. If the
-      // model returned a keeper id that only exists in its cleaned output (a hallucinated
-      // id absent from originalById), skip the group instead of throwing and aborting the
-      // entire cleanup run.
       if (!originalItem) continue;
       const group = mergedGroups.find((g) => g[0] === id)!;
       let bestFreq = (originalItem as any).frequency || 0;
@@ -503,7 +488,6 @@ export function rebuildProfileUsing(
           }
         }
       }
-      // Take sum frequency — accumulating confirmed merges
       let totalFreq = (originalItem as any).frequency || 0;
       for (let i = 1; i < group.length; i++) {
         const srcOriginal = originalById.get(group[i] ?? "");
@@ -512,7 +496,6 @@ export function rebuildProfileUsing(
         }
       }
       (resultItem as any).frequency = totalFreq;
-      // Accumulate alpha/beta from merged items
       const keeperAlpha = (originalItem as any).alpha || 1;
       const keeperBeta = (originalItem as any).beta || 1;
       let mergedAlpha = keeperAlpha;

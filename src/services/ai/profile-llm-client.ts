@@ -20,8 +20,6 @@ export async function getOpenCodeClient(): Promise<OpencodeClient> {
 
   const { ensureProviderConnected, getV2Client } = await loadOpencodeProvider();
 
-  // One refresh-on-miss before failing: user-config providers register
-  // seconds after plugin setup, so the init snapshot may lag the host.
   if (!(await ensureProviderConnected(provider))) {
     throw new Error(
       `opencode provider '${provider}' is not connected. Check your opencode provider configuration.`

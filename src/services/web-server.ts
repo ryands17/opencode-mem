@@ -52,18 +52,6 @@ import {
   handleGetMemory,
 } from "./api-handlers.js";
 
-/**
- * Runtime-portable HTTP server handle.
- *
- * Under Bun we delegate to `Bun.serve` which is the fastest path on that
- * runtime. Under Node we use `node:http` and adapt between IncomingMessage/
- * ServerResponse and the Web `Request`/`Response` primitives used by the
- * fetch-style handler.
- *
- * Both paths expose the same minimal surface — `stop()` and `url` — that the
- * rest of this class relies on, so the WebServer class itself does not need
- * to branch.
- */
 interface PortableServerHandle {
   stop(): void;
 }
@@ -117,10 +105,6 @@ function serveFetch(opts: {
     return { stop: () => bunHandle.stop() };
   }
 
-  // Node path: wrap node:http around the fetch-style handler. The adapter
-  // converts IncomingMessage → Web Request and Web Response → ServerResponse.
-  // Bodies stream both directions via the WHATWG Streams ↔ Node Streams
-  // helpers that ship with Node 18+.
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     let destroyed = false;
     const abortController = new AbortController();
@@ -173,16 +157,12 @@ function serveFetch(opts: {
     }
   });
 
-  // Surface EADDRINUSE synchronously so callers can detect the
-  // already-running-instance case the same way they do under Bun.
   let listenError: Error | undefined;
   server.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
       listenError = err;
     }
   });
-  // exclusive: false disables SO_EXCLUSIVEADDRUSE on Windows, allowing
-  // rebind after a crashed predecessor left orphaned sockets behind.
   server.listen({ port: opts.port, host: opts.hostname, reuseAddr: true, exclusive: false });
   server.unref();
   server.timeout = NODE_HTTP_IDLE_TIMEOUT_MS;
@@ -324,22 +304,15 @@ export class WebServer {
   }
 
   private async attemptTakeover(): Promise<void> {
-    // prevent thundering herd: multiple non-owners racing to bind port
     const jitterMs = 500 + Math.random() * 1000;
     await new Promise((resolve) => setTimeout(resolve, jitterMs));
 
     if (await this.checkServerAvailable()) {
-      // The original owner recovered. Reset the failure counter so a stale
-      // count can't advance the port on the next, unrelated failure.
       this.takeoverFailures = 0;
       this.startHealthCheckLoop();
       return;
     }
 
-    // Windows can leave an orphaned LISTEN socket in the TCP table after a
-    // crash: the port refuses to bind (EADDRINUSE) yet nothing answers HTTP,
-    // so repeated takeovers fail forever. After a few consecutive failures,
-    // fall back to a free neighbor port instead of looping.
     this.takeoverFailures += 1;
     const nextPort = nextFallbackPort(
       this.config.port,
@@ -357,15 +330,12 @@ export class WebServer {
       this.config.port >= this.maxFallbackPort &&
       this.takeoverFailures >= MIN_FAILED_TAKEOVERS
     ) {
-      // Every candidate port is held by a non-responsive process. Stop the
-      // health loop instead of retrying every five seconds forever.
       this.stopHealthCheckLoop();
       this.notifyPortsExhausted();
       return;
     }
 
     try {
-      // Reset startPromise so _start() can run again
       this.startPromise = null;
       await this._start();
     } catch {
@@ -430,9 +400,6 @@ export class WebServer {
       const headers = this.config.apiToken
         ? { Authorization: `Bearer ${this.config.apiToken}` }
         : undefined;
-      // With an API token, probe authenticated /api/stats?probe=1 (cheap) so we
-      // prove ownership without walking shards or scanning logs. Health stays
-      // unauthenticated and is only safe when no token is configured.
       const endpoint = this.config.apiToken ? "/api/stats?probe=1" : "/api/health";
       const response = await fetch(`${this.getUrl()}${endpoint}`, {
         method: "GET",
@@ -440,9 +407,6 @@ export class WebServer {
         signal: AbortSignal.timeout(2000),
       });
       if (!response.ok) return false;
-      // Fallback spans 10 neighbor ports; any 2xx from an unrelated local
-      // service must not be mistaken for an opencode-mem owner. Require the
-      // response to carry our API envelope.
       const body = (await response.json()) as { success?: boolean; status?: string };
       if (endpoint === "/api/health") {
         return body.success === true && body.status === "ok";
@@ -452,8 +416,6 @@ export class WebServer {
       return false;
     }
   }
-
-  // --- HTTP request handling ---
 
   private async handleRequest(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -505,7 +467,6 @@ export class WebServer {
         return this.serveStaticFile("favicon.ico", "image/x-icon");
       }
 
-      // Vite production assets (hashed JS/CSS/fonts) and other static files.
       if (method === "GET" && !path.startsWith("/api/")) {
         const relative = path.replace(/^\/+/, "");
         if (relative && !relative.includes("..")) {
@@ -810,7 +771,6 @@ export class WebServer {
         return this.jsonResponse(result, result.success ? 200 : 404);
       }
 
-      // OpenCode HTTP skill catalog (public path; prefer loopback / network auth).
       if (path === "/skills/index.json" && method === "GET") {
         const result = await handleSkillsCatalogIndex();
         if (!result.success || !result.data) {
@@ -822,7 +782,6 @@ export class WebServer {
         });
       }
 
-      // OpenCode catalog layout: /skills/{id}/{id}.md
       if (path.startsWith("/skills/") && path.endsWith(".md") && method === "GET") {
         const rest = path.slice("/skills/".length);
         const parts = rest.split("/").filter(Boolean);
@@ -844,7 +803,6 @@ export class WebServer {
         });
       }
 
-      // SPA fallback for client routes (e.g. /profile) — serve the app shell.
       if (method === "GET" && !path.startsWith("/api/") && !extname(path)) {
         return this.serveStaticFile("index.html", "text/html");
       }

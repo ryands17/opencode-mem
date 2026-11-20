@@ -27,7 +27,6 @@
     children,
   }: Props = $props();
 
-  // Initial open only — toggles stay local and must not re-sync from the prop.
   let open = $state(untrack(() => defaultOpen));
 
   function toggle() {

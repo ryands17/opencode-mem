@@ -135,12 +135,10 @@ function filterItems(items: MemoryItem[], opts: { tags?: string[]; q?: string })
   return next;
 }
 
-/** Serves `/api/*` from `web/sim` fixtures when OPENCODE_MEM_SIM=1. */
 export function opencodeMemSimPlugin(simRoot: string): Plugin {
   return {
     name: "opencode-mem-sim",
     configureServer(server) {
-      // Mutable session copy so pin/edit/delete survive reloads during the Vite process.
       let memories: MemoryItem[] = readJson<MemoriesFile>(
         path.join(simRoot, "memories.json")
       ).items.map((item) => ({ ...item }));
@@ -309,7 +307,6 @@ export function opencodeMemSimPlugin(simRoot: string): Plugin {
                   item.memoryType = parsed.type || undefined;
                 }
                 item.updatedAt = new Date().toISOString();
-                // Keep vault file list titles in sync for plugin-owned sims.
                 const vaultFile = markdownStatus.files.find((file) => file.id === id);
                 if (vaultFile && typeof parsed.content === "string") {
                   vaultFile.mtimeMs = Date.now();
@@ -466,7 +463,6 @@ export function opencodeMemSimPlugin(simRoot: string): Plugin {
             return;
           }
 
-          // Other mutations: acknowledge without persistence.
           if (method !== "GET" && method !== "HEAD") {
             sendJson(res, 200, stubOk());
             return;

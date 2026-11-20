@@ -38,13 +38,12 @@ export class GoogleGeminiProvider extends BaseAIProvider {
       content,
       toolCallId,
     });
-    // Gemini tool response format
     messages.push({
       role: "function",
       parts: [
         {
           functionResponse: {
-            name: toolCallId.split(":")[0], // Gemini expects the name of the function
+            name: toolCallId.split(":")[0],
             response: JSON.parse(content),
           },
         },
@@ -70,14 +69,12 @@ export class GoogleGeminiProvider extends BaseAIProvider {
     const existingMessages = await this.aiSessionManager.getMessages(session.id);
     const contents: any[] = [];
 
-    // System instruction is separate in Gemini API
     const geminiSystemInstruction = {
       parts: [{ text: systemPrompt }],
     };
 
-    // Convert existing messages to Gemini format
     for (const msg of existingMessages) {
-      if (msg.role === "system") continue; // Skip system as it's passed separately
+      if (msg.role === "system") continue;
 
       const role = msg.role === "assistant" ? "model" : "user";
       const parts: any[] = [];
@@ -130,7 +127,6 @@ export class GoogleGeminiProvider extends BaseAIProvider {
     const maxIterations = this.config.maxIterations ?? 5;
     const iterationTimeout = this.config.iterationTimeout ?? 30000;
 
-    // Gemini API expects the tool name as a function declaration
     const tools = [
       {
         functionDeclarations: [
@@ -159,7 +155,7 @@ export class GoogleGeminiProvider extends BaseAIProvider {
           tools,
           toolConfig: {
             functionCallingConfig: {
-              mode: "ANY", // Force function calling
+              mode: "ANY",
               allowedFunctionNames: [toolSchema.function.name],
             },
           },
@@ -203,7 +199,6 @@ export class GoogleGeminiProvider extends BaseAIProvider {
         const modelMsg = candidate.content;
         const assistantSequence = (await this.aiSessionManager.getLastSequence(session.id)) + 1;
 
-        // Map Gemini response back to our internal message format
         const assistantMsg: any = {
           aiSessionId: session.id,
           sequence: assistantSequence,
@@ -258,7 +253,6 @@ export class GoogleGeminiProvider extends BaseAIProvider {
           }
         }
 
-        // Retry if no tool call was made
         const retryPrompt = "Please use the save_memories tool as instructed.";
         const retrySequence = (await this.aiSessionManager.getLastSequence(session.id)) + 1;
         await this.aiSessionManager.addMessage({

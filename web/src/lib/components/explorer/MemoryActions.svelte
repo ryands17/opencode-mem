@@ -12,7 +12,6 @@
     pinned?: boolean;
     isLinked?: boolean;
     deleteLabel?: string;
-    /** Show pin/unpin controls (memories). Default true. */
     showPin?: boolean;
     onPin?: (id: string) => void;
     onUnpin?: (id: string) => void;

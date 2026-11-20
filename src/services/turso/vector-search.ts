@@ -111,8 +111,6 @@ export class TursoVectorSearch {
     const db = await tursoConnectionManager.getConnection(shard.dbPath);
     await this.prepareShardDb(db);
     const queryJson = vectorToJson(queryVector);
-    // Exact cosine already returns the best-k rows; over-fetch a little so
-    // content+tags+keyword candidates can merge before hybrid re-rank.
     const k = Math.max(limit * 2, 32);
 
     const contentResults = await this.exactScanKind(db, queryJson, k, containerTag, "vector");
@@ -167,7 +165,6 @@ export class TursoVectorSearch {
           ? 0
           : distanceToSimilarity(Number(row.tags_dist));
       const memoryTagsStr = String(row.tags || "");
-      // filter(Boolean): "".split(",") → [""], and "query".includes("") is always true.
       const memoryTags = memoryTagsStr
         .split(",")
         .map((tag) => tag.trim().toLowerCase())
@@ -183,7 +180,6 @@ export class TursoVectorSearch {
 
       const keywordSim = keywordScores.get(String(row.id)) ?? 0;
       const finalTagsSim = Math.max(tagsSim, exactMatchBoost);
-      // With query text: blend vector + keyword. Without: keep classic 0.6/0.4.
       const similarity = hasKeyword
         ? contentSim * 0.5 + finalTagsSim * 0.3 + keywordSim * 0.2
         : contentSim * 0.6 + finalTagsSim * 0.4;
@@ -211,11 +207,6 @@ export class TursoVectorSearch {
     return hydratedResults.slice(0, Math.max(0, limit));
   }
 
-  /**
-   * Keyword recall for hybrid ranking.
-   * sqld/libSQL does not ship FTS5, so we use tokenized LIKE
-   * over content/tags (bounded tokens, ESCAPE-safe).
-   */
   private async keywordScores(
     db: TursoDb,
     queryText: string | undefined,
@@ -353,13 +344,11 @@ export class TursoVectorSearch {
       return true;
     } catch (error) {
       if (!isIdxDeleteMismatchError(error)) throw error;
-      // IdxDelete with the row still present means the DELETE rolled back.
       const remaining = await db.get(`SELECT id, deleted_at FROM memories WHERE id = ?`, [
         memoryId,
       ]);
       if (!remaining) return true;
 
-      // Quarantine active rows so age-based cleanup stops re-hitting the same key.
       if (remaining.deleted_at == null) {
         const now = Date.now();
         try {
@@ -378,8 +367,6 @@ export class TursoVectorSearch {
           });
         }
       }
-      // Soft-deleted / quarantined row that cannot be hard-purged without REINDEX.
-      // Return false quietly so trash purge neither fake-counts nor log-spams.
       return false;
     }
   }
@@ -494,9 +481,6 @@ export class TursoVectorSearch {
       args.push(containerTag);
     }
     if (filters.excludeSessionId !== undefined) {
-      // Prefer the indexed session_id column (same resolution as insert/get-by-session),
-      // then fall back to metadata.sessionID for legacy rows. Absent/malformed metadata
-      // with a null session_id stays eligible — matching prior JS undefined semantics.
       conditions.push(
         `COALESCE(
           NULLIF(session_id, ''),

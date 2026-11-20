@@ -30,7 +30,6 @@ export type StatsData = {
   byScope: { user: number; project: number };
   byType: Record<string, number>;
   generatedAt: string;
-  // Older or partially available responses can omit diagnostic sections.
   shards?: StatsShard[];
   profile?: {
     exists: boolean;
@@ -57,7 +56,6 @@ export function createStatsStore() {
     if (result.success && result.data) {
       data = result.data;
     } else {
-      // Keep the last snapshot visible; an empty error still signals failure.
       error = result.error || "";
     }
   }

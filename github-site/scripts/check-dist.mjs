@@ -48,30 +48,23 @@ while (pending.length > 0) {
     const code = await readFile(join(dist, src), "utf8");
     for (const m of code.matchAll(staticImport))
       pending.push(posix.resolve(posix.dirname(src), m[1]));
-  } catch {
-    // Svelte/hydration chunks may live under hashed paths; skip missing.
-  }
+  } catch {}
 }
 let eagerJs = 0;
 for (const src of eager) {
   try {
     eagerJs += (await stat(join(dist, src))).size;
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
 const inline = inlineBodies.reduce((n, body) => n + body.length, 0);
 let lazyChunks = "none";
 try {
   const lazy = (await readdir(join(dist, "_astro"))).filter((f) => f.startsWith("memory-field"));
   if (lazy.length > 0) lazyChunks = lazy.join(", ");
-} catch {
-  // no _astro output
-}
+} catch {}
 console.log(
   `landing: ${scripts.length} external script(s), ${eager.size} eager file(s) ${eagerJs} B, inline ${inline} B, lazy chunk(s): ${lazyChunks}`
 );
-// Svelte hydration adds more than the prior CSS-first landing budget; keep a soft warning only above 80KB.
 if (eagerJs + inline > 80000)
   failures.push(`landing eager JS ${eagerJs + inline} B exceeds 80000 B budget`);
 

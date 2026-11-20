@@ -5,7 +5,6 @@ import {
   stripPrivateContent,
 } from "../src/services/privacy.js";
 
-// Generated examples only. These are not working credentials.
 const secrets = [
   `ghp_${"a1".repeat(18)}`,
   `gho_${"b2".repeat(18)}`,
@@ -112,7 +111,7 @@ describe("credential redaction", () => {
       "xoxb-this-is-a-placeholder-not-a-token",
       "github_pat_documentation",
       "prefixghp_" + "a1".repeat(18),
-      "AKIA123456789012345", // too short
+      "AKIA123456789012345",
       "-----BEGIN PUBLIC KEY-----\nYWJjMTIz\n-----END PUBLIC KEY-----",
       "Bearer token",
     ];
@@ -163,7 +162,6 @@ describe("credential redaction", () => {
       expect(clean).not.toContain(secrets[0]!);
       expect(clean).toContain("[REDACTED:github-token]");
     }
-    // Generous regression guard, not a hardware-specific benchmark.
     expect(performance.now() - start).toBeLessThan(2000);
   });
 });

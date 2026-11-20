@@ -374,9 +374,7 @@ export async function findNearDuplicateGroupsForDreaming(): Promise<DreamingNear
     );
   };
 
-  // User-scope: always same container_tag only (never mix with projects).
   await collectFromShardPool(userShards, "user", false);
-  // Project-scope: cross-tag when crossProject / defaultScope all-projects.
   await collectFromShardPool(projectShards, "project", crossProject);
 
   return groups;
@@ -547,8 +545,6 @@ export class DreamingService {
           }
 
           const metaKey = decision.action === "supersede" ? "supersededBy" : "mergedInto";
-          // Always preserve the keep row's own container_tag (critical for
-          // cross-project groups where keepId may not be the representative).
           const outcome = await this.applyDreamingAction(
             keepId,
             decision.content.trim(),
@@ -575,7 +571,6 @@ export class DreamingService {
                 ? `${CONFIG.memoryProvider}/${CONFIG.memoryModel}`
                 : null,
           });
-          // Auth / provider outages will fail every remaining group the same way.
           if (/ProviderRequestError|API_KEY is not set|401|Unauthorized/i.test(errMsg)) {
             const processed =
               result.groupsMerged +
@@ -599,7 +594,6 @@ export class DreamingService {
         result.groupsFailed > 0 &&
         (abortedForProvider || result.groupsFailed === result.groupsConsidered);
       if (onlyFailures) {
-        // Do not advance the schedule when nothing could be processed.
         log("dreaming: run complete with only failures; not advancing lastRunAt", result);
       } else {
         writeState({ lastRunAt: Date.now() });
@@ -662,7 +656,6 @@ export class DreamingService {
     if (!keepShard || !keepRow) return { applied: false, softDeleted: 0 };
     if (Number(keepRow.is_pinned ?? 0) === 1) return { applied: false, softDeleted: 0 };
 
-    // Soft-delete drops first so we never rewrite keep if nothing can be retired.
     let softDeleted = 0;
     for (const dropId of dropIds) {
       for (const shard of shards) {

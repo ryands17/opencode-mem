@@ -16,7 +16,6 @@ import { TursoDb } from "../turso/turso-db.js";
  */
 export const PROFILE_LEARNING_COORDINATION_DB = ".profile-learning-coordination.db";
 
-/** Single logical lock — the table only ever holds this one row. */
 const LOCK_NAME = "profile-learning";
 
 interface ProcessIdentity {
@@ -30,37 +29,25 @@ interface ValidOwner {
   pid: number;
   bootId: string | null;
   starttime: string | null;
-  /** Structured view of `starttime`; null exactly when `starttime` is null. */
   parsedStarttime: ParsedStarttime | null;
 }
 
 type ProcStatResult =
   { status: "ok"; starttime: string } | { status: "absent" } | { status: "unreadable" };
 
-/** Linux boot_id is a lowercase UUID printed by the kernel. */
 const LINUX_BOOT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** Darwin boot identity derived from kern.boottime seconds. */
 const DARWIN_BOOT_ID_PATTERN = /^darwin-boot-\d+$/;
 
 function isKnownBootId(value: string): boolean {
   return LINUX_BOOT_ID_PATTERN.test(value) || DARWIN_BOOT_ID_PATTERN.test(value);
 }
 
-/** Cached for the process lifetime — boot identity cannot change without a reboot. */
 let cachedBootId: string | null | undefined;
 
 function coordinationDbPath(): string {
   return resolve(CONFIG.storagePath || "", PROFILE_LEARNING_COORDINATION_DB);
 }
 
-/**
- * Opens the coordination database, guarantees the lock table exists, runs the
- * callback, and always closes the handle. One handle per operation; nothing is
- * cached across the LLM round trip.
- *
- * sqld does not support `PRAGMA busy_timeout` (it is a server, not a local
- * file): contention is handled by withCoordinationDbRetry instead.
- */
 async function withCoordinationDb<T>(fn: (db: TursoDb) => Promise<T>): Promise<T> {
   const dbPath = coordinationDbPath();
   const db = await tursoConnectionManager.getConnection(dbPath);
@@ -87,7 +74,6 @@ function isCoordinationLockError(error: unknown): boolean {
   return LOCK_OPEN_ERROR_RE.test(message);
 }
 
-/** Retry briefly when another process still owns the coordination file. */
 async function withCoordinationDbRetry<T>(fn: (db: TursoDb) => Promise<T>): Promise<T> {
   const attempts = 8;
   let lastError: unknown;
@@ -105,22 +91,11 @@ async function withCoordinationDbRetry<T>(fn: (db: TursoDb) => Promise<T>): Prom
   throw lastError;
 }
 
-/**
- * Reads the machine's current boot id. The value is only used as a dead
- * signal when it matches a known platform format; anything unreadable or
- * malformed is treated as "unknown" and never participates in a dead
- * decision.
- *
- * - Linux: `/proc/sys/kernel/random/boot_id` (UUID)
- * - Darwin: `sysctl kern.boottime` seconds, encoded as `darwin-boot-<sec>`
- */
 function readBootIdUncached(): string | null {
   try {
     const value = readFileSync("/proc/sys/kernel/random/boot_id", "utf-8").trim();
     if (LINUX_BOOT_ID_PATTERN.test(value)) return value;
-  } catch {
-    // Fall through to Darwin / unknown.
-  }
+  } catch {}
 
   if (process.platform === "darwin") {
     try {
@@ -149,14 +124,6 @@ function readBootId(): string | null {
   return cachedBootId;
 }
 
-/**
- * Reads a process starttime identity used for PID-reuse detection.
- *
- * - Linux: field 22 of `/proc/<pid>/stat` (clock ticks since boot), stored as
- *   decimal clock-tick digits
- * - Darwin: `ps -p <pid> -o lstart=` under LC_ALL=C, stored as `darwin:<lstart>`
- *   raw text (never Date.parsed / never normalized to unix-ms)
- */
 function readLinuxProcStat(pid: number): ProcStatResult {
   let stat: string;
   try {
@@ -185,33 +152,11 @@ function readDarwinStarttime(pid: number): ProcStatResult {
       env: { ...process.env, LC_ALL: "C", LANG: "C" },
     });
     if (result.status !== 0) {
-      // ps exits non-zero when the PID is gone (or invalid). Treat as absent
-      // so the signal-0 probe can confirm death under hidepid-like cases.
       return { status: "absent" };
     }
     const lstart = typeof result.stdout === "string" ? result.stdout.trim() : "";
     if (!lstart) return { status: "absent" };
-    // Store the raw LC_ALL=C lstart text. Do NOT Date.parse — JS date-time
-    // parsing without a timezone is implementation-defined and can disagree
-    // across bun test vs worker processes (UTC vs local), which would make a
-    // live holder look like PID reuse.
-    //
-    // Live reads must pass the same strict calendar validation as stored
-    // rows: a transient / malformed `ps` rendering (anything that is not a
-    // valid LC_ALL=C lstart) must degrade to "unreadable" rather than become
-    // a comparable identity. Otherwise `stat.starttime !== owner.starttime`
-    // would fire a PID-reuse steal against a live holder whose stored row is
-    // well-formed.
-    //
-    // TZ note (known limitation, deliberate non-change): lstart rendering can
-    // still depend on the reading process's TZ environment even under
-    // LC_ALL=C. Because the raw text is stored (never normalized), a holder
-    // and a later reader running under different TZ values would see
-    // different lstart text for the same live process and the mismatch path
-    // would misreport PID reuse. That would require evidence from real macOS
-    // deployments to justify a format migration — and any migration must
-    // keep existing stored rows readable so live holders under the old text
-    // are not stolen from. Until then this stays raw-text exact comparison.
+    // WARNING: store and compare the raw LC_ALL=C lstart text verbatim; normalizing it (e.g. Date.parse) makes TZ/implementation differences fire false PID-reuse steals against live holders.
     const starttime = `darwin:${lstart}`;
     if (parseStoredStarttime(starttime) === null) {
       return { status: "unreadable" };
@@ -229,7 +174,6 @@ function readProcStat(pid: number): ProcStatResult {
   if (process.platform === "darwin") {
     return readDarwinStarttime(pid);
   }
-  // Other platforms: no starttime identity; dead detection falls back to signals.
   return { status: "unreadable" };
 }
 
@@ -239,10 +183,6 @@ function currentProcessIdentity(): ProcessIdentity {
   return {
     pid: process.pid,
     bootId: readBootId(),
-    // Only record a starttime that is itself a valid producer format: a
-    // malformed reader output (e.g. ps rendering outside the strict lstart
-    // shape) must degrade to "no starttime identity" (fail-closed) rather
-    // than persist an unparseable row or act as a comparable self identity.
     starttime: starttime !== null && parseStoredStarttime(starttime) !== null ? starttime : null,
   };
 }
@@ -261,12 +201,6 @@ function coercePid(value: unknown): number | null {
   return null;
 }
 
-/**
- * Kind of a stored starttime identity. The two producers are platform
- * specific and their outputs are not comparable with each other:
- *  - "linux"  — decimal clock ticks from field 22 of /proc/<pid>/stat
- *  - "darwin" — `darwin:<lstart>` from `ps -o lstart=` under LC_ALL=C
- */
 type StarttimeKind = "linux" | "darwin";
 
 interface ParsedStarttime {
@@ -274,13 +208,6 @@ interface ParsedStarttime {
   value: string;
 }
 
-/**
- * Strict `ps -o lstart=` format under LC_ALL=C (no timezone — TZ affects it,
- * see the note in readDarwinStarttime):
- * `<weekday> <month> <day> <HH>:<MM>:<SS> <year>`, e.g.
- * "Sat Oct  3 09:15:02 2026" (day is space-padded to two columns).
- * Structural only: bound digits, no calendar meaning yet.
- */
 const DARWIN_LSTART_PATTERN =
   /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)  ?(\d{1,2}) ([01]\d|2[0-3]):[0-5]\d:[0-5]\d (\d{4})$/;
 
@@ -300,17 +227,6 @@ const DARWIN_MONTH_NAMES = [
   "Dec",
 ] as const;
 
-/**
- * Calendar validation of a structurally matched lstart. A permissive regex
- * alone accepts impossible dates (Oct 99, Oct 00, Feb 30, Apr 31, Feb 29 on
- * a non-leap year, or a weekday that does not exist); every one of those
- * would make a live owner's stored identity "differ" from the reader's and
- * fire the PID-reuse steal. So the match is round-tripped through the UTC
- * calendar: Date.UTC is fed the claimed fields (never Date.parse, which
- * interprets strings in the process TZ), the normalized fields must come
- * back identical, and the derived weekday must equal the claimed one.
- * Gregorian leap rules — including the century rule — are the calendar's.
- */
 function isValidDarwinLstart(lstart: string): boolean {
   const match = DARWIN_LSTART_PATTERN.exec(lstart);
   if (!match) return false;
@@ -318,25 +234,18 @@ function isValidDarwinLstart(lstart: string): boolean {
   const monthIndex = DARWIN_MONTH_NAMES.indexOf(match[2] as (typeof DARWIN_MONTH_NAMES)[number]);
   const day = Number(match[3]);
   const year = Number(match[5]);
-  if (year < 1) return false; // regexp admits 0000; a real year is positive
+  if (year < 1) return false;
   const utc = new Date(Date.UTC(year, monthIndex, day));
   if (
     utc.getUTCFullYear() !== year ||
     utc.getUTCMonth() !== monthIndex ||
     utc.getUTCDate() !== day
   ) {
-    return false; // day rolled over: this date does not exist on the calendar
+    return false;
   }
   return DARWIN_WEEKDAY_NAMES[utc.getUTCDay()] === weekday;
 }
 
-/**
- * Structural parse of a stored starttime. Returns null for anything that is
- * not exactly one of the two producer formats: Linux decimal ticks, or a
- * strict Darwin lstart behind the `darwin:` prefix. A bare `darwin:` prefix,
- * garbage suffix, malformed date, or non-numeric junk is invalid — never a
- * comparable identity, and never usable to declare an owner dead.
- */
 function parseStoredStarttime(raw: string): ParsedStarttime | null {
   if (/^\d+$/.test(raw)) return { kind: "linux", value: raw };
   if (raw.startsWith("darwin:")) {
@@ -352,15 +261,6 @@ function coerceOptionalString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-/**
- * Boot id of a stored owner record. Three distinct states:
- *  - "none"  — column is NULL: legitimately recorded on a platform without
- *              boot identity (conservative signal-probe fallback applies);
- *  - "known" — a well-formed Linux UUID or Darwin `darwin-boot-<sec>` string;
- *  - invalid — anything else (garbage string, number, object, …). Never
- *              null-coerced: an owner whose boot id we cannot interpret is
- *              an untrusted record and the lock is not acquired (fail-closed).
- */
 type StoredBootId = { kind: "none" } | { kind: "known"; value: string };
 
 function parseStoredBootId(value: unknown): StoredBootId | null {
@@ -371,11 +271,6 @@ function parseStoredBootId(value: unknown): StoredBootId | null {
   return null;
 }
 
-/**
- * Structural validation of the stored owner record. A malformed record is
- * never treated as a free or reclaimable lock (fail-closed): the caller just
- * skips this round instead of potentially stealing a live holder's lock.
- */
 function parseOwnerRow(
   row: Record<string, unknown>
 ): { ok: true; owner: ValidOwner } | { ok: false; reason: string } {
@@ -396,9 +291,6 @@ function parseOwnerRow(
     if (typeof raw !== "string" || raw.length === 0 || raw.length > 160) {
       return { ok: false, reason: "invalid starttime" };
     }
-    // Linux stores /proc starttime as digits; Darwin stores `darwin:<lstart>`.
-    // Anything that is not exactly one of those two producer formats is an
-    // untrusted record: fail closed rather than compare incomparable values.
     parsedStarttime = parseStoredStarttime(raw);
     if (!parsedStarttime) {
       return { ok: false, reason: `invalid starttime: ${raw.slice(0, 40)}` };
@@ -418,32 +310,6 @@ function parseOwnerRow(
   return { ok: true, owner: { ownerToken, pid, bootId, starttime, parsedStarttime } };
 }
 
-/**
- * True only when the recorded owner is *definitively* gone from this
- * machine's current PID namespace:
- *  - its boot id is a known identity differing from this machine's current
- *    boot id (the holder ran under a previous boot), or
- *  - process starttime is readable and differs (PID reuse), or
- *  - process starttime lookup is absent AND the signal-0 probe returns ESRCH —
- *    hidepid=2 makes a live holder's /proc entry invisible, so ENOENT alone
- *    is never proof of death, or
- *  - (no startup identity recorded) signal 0 returns ESRCH.
- *
- * EPERM means "alive under another uid" and counts as live; any other
- * error means "unknown" and is never a dead signal. Identity we cannot
- * establish is never guessed, and no TTL ever overrides this check.
- *
- * Single-machine view: the coordination DB is expected to be shared only by
- * processes on one host. A record written by a process in another PID
- * namespace is beyond what local process tables can attest and conservatively
- * reads as not-dead.
- */
-
-/**
- * Signal-0 liveness probe. ESRCH is the only "dead" outcome: EPERM means
- * alive under another uid (hidepid=2 or another user), and any other error
- * means "unknown", which is never a dead signal.
- */
 function isPidGoneBySignal(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -459,13 +325,6 @@ function ownerIsDefinitelyDead(owner: ValidOwner, self: ProcessIdentity): boolea
   }
 
   if (self.starttime !== null && owner.starttime !== null) {
-    // Cross-kind identities are never comparable: a Darwin lstart stored by
-    // a macOS holder can never equal a Linux host's numeric /proc ticks, so
-    // treating the inequality as "PID reuse" would CAS-steal a live lock the
-    // moment the coordination DB crosses platforms (or holds a foreign-format
-    // row). Fail closed instead: do not declare the owner dead (skip reclaim
-    // this round). The signal probe is intentionally NOT consulted here —
-    // an incomparable identity must never produce a dead assertion.
     if (owner.parsedStarttime === null) {
       return false;
     }
@@ -475,8 +334,6 @@ function ownerIsDefinitelyDead(owner: ValidOwner, self: ProcessIdentity): boolea
     }
     const stat = readProcStat(owner.pid);
     if (stat.status === "ok") {
-      // Belt-and-suspenders: live output is validated in the platform reader
-      // already, but never treat an unparseable live identity as PID reuse.
       const liveParsed = parseStoredStarttime(stat.starttime);
       if (liveParsed === null || liveParsed.kind !== owner.parsedStarttime.kind) {
         return false;
@@ -484,8 +341,6 @@ function ownerIsDefinitelyDead(owner: ValidOwner, self: ProcessIdentity): boolea
       return stat.starttime !== owner.starttime;
     }
     if (stat.status === "absent") {
-      // /proc may be hidden (hidepid=2): fall through to the signal probe
-      // instead of trusting ENOENT as proof of death.
       return isPidGoneBySignal(owner.pid);
     }
     return false;
@@ -507,8 +362,6 @@ function releaseFn(ownerToken: string): () => Promise<void> {
         ]);
       });
     } catch (error) {
-      // The owner row survives; after this process exits another process can
-      // reclaim it via the dead-owner CAS path. Never throw out of release.
       log("profile-learning lock: release failed; row will be reclaimed after exit", {
         error: String(error),
       });
@@ -516,10 +369,6 @@ function releaseFn(ownerToken: string): () => Promise<void> {
   };
 }
 
-/**
- * Test-only interleaving hooks for the CAS race fixture. Enabled only when
- * PLL_CAS_HOOKS=1 so production acquires never pay for this path.
- */
 async function casTestHooks(
   phase: "select" | "update",
   row?: Record<string, unknown> | null
@@ -601,8 +450,6 @@ export async function tryAcquireProfileLearningLock(
         [LOCK_NAME]
       );
       if (!row) {
-        // Released between our failed INSERT and the SELECT. Treat as
-        // contention: skip this round, the next idle event retries.
         return { kind: "skip" };
       }
 
@@ -618,8 +465,6 @@ export async function tryAcquireProfileLearningLock(
       }
 
       if (!ownerIsDefinitelyDead(parsed.owner, identity)) {
-        // Live holder, EPERM, or uncertain identity: never reclaim, never
-        // guess, and no TTL is allowed to override this.
         return { kind: "skip" };
       }
 
@@ -637,8 +482,6 @@ export async function tryAcquireProfileLearningLock(
       return null;
     }
 
-    // Park outside the DB session so cas-race competitors (and Windows
-    // single-owner opens) are not blocked by a held coordination handle.
     await casTestHooks("update");
 
     const claimed = await withCoordinationDbRetry(async (db) =>
@@ -664,7 +507,6 @@ export async function tryAcquireProfileLearningLock(
       });
       return releaseFn(ownerToken);
     }
-    // Lost the CAS race to another reclaimer.
     return null;
   } catch (error) {
     log("profile-learning lock: coordination database unavailable, refusing to acquire", {

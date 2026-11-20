@@ -64,9 +64,7 @@ export class TursoConnectionManager {
       } catch (error) {
         try {
           client?.close();
-        } catch {
-          // ignore close errors during cleanup
-        }
+        } catch {}
         throw wrapSqldOpenError(CONFIG.sqldUrl, error);
       }
     })();

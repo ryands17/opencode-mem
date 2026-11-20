@@ -7,8 +7,6 @@ import {
 } from "../src/services/injected-prompt-filter.js";
 import { normalizeInjectionMarkers } from "../src/config.js";
 
-// Verbatim samples taken from a real OpenCode session store, where 490 of 801
-// recorded user messages consisted entirely of injected content.
 const BACKGROUND_TASK_NOTIFICATION = [
   "<system-reminder>",
   "[BACKGROUND TASK RESULT READY]",
@@ -66,8 +64,6 @@ describe("isInjectedPart", () => {
   });
 
   it("detects injected parts that carry no synthetic flag", () => {
-    // Regression guard: the observed injections set no synthetic flag at all,
-    // so structural detection alone would miss the overwhelming majority.
     expect(isInjectedPart({ type: "text", text: INTERNAL_CONTINUATION })).toBe(true);
     expect(isInjectedPart({ type: "text", text: BACKGROUND_TASK_NOTIFICATION })).toBe(true);
   });

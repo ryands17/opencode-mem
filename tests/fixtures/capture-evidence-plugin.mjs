@@ -160,8 +160,7 @@ try {
     mgr.reset();
     getsBeforeRestart = hostGets;
     plugin = await OpenCodeMemPlugin(ctx);
-    // Startup recovery is intentionally fire-and-forget. Wait for its durable
-    // completion rather than bypassing it by calling performAutoCapture.
+    // WARNING: startup recovery is fire-and-forget — wait for it below; calling performAutoCapture directly would bypass the recovery under test.
     for (let i = 0; i < 100 && counters.persist === 0; i++)
       await new Promise((r) => realTimeout(r, 10));
   } else {

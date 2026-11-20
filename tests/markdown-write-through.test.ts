@@ -78,7 +78,6 @@ describe("markdown write-through", () => {
 
     const deleted = await memoryClient.deleteMemory(added.id);
     expect(deleted.success).toBe(true);
-    // Soft-delete keeps the markdown file so trash restore can re-surface it.
     expect(existsSync(filePath)).toBe(true);
     const listed = await memoryClient.listMemories(tag.tag, 20, "project");
     expect(listed.success).toBe(true);

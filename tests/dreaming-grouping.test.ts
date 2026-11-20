@@ -21,12 +21,9 @@ function entry(
 
 describe("groupRelatedMemoryEntries", () => {
   it("groups related pairs at relatedThreshold but not only near-dup 0.9", () => {
-    // Identical direction → similarity 1.0 is excluded (< 1.0 required).
-    // Nearly parallel vectors → high similarity (~0.99).
-    // Distinct-ish vectors → ~0.8 range.
     const a = entry("a", "p1", vec(1, 0, 0));
-    const b = entry("b", "p1", vec(0.8, 0.6, 0)); // cos ≈ 0.8
-    const c = entry("c", "p1", vec(0, 1, 0)); // cos with a = 0
+    const b = entry("b", "p1", vec(0.8, 0.6, 0));
+    const c = entry("c", "p1", vec(0, 1, 0));
 
     const at075 = groupRelatedMemoryEntries([a, b, c], {
       threshold: 0.75,

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import {
   CheaperInferenceProvider,
   CHEAPER_INFERENCE_API_URL,
@@ -67,13 +67,34 @@ function makeProvider(
   };
 }
 
-describe("CheaperInferenceProvider", () => {
-  const originalFetch = globalThis.fetch;
+type RecordedRequest = {
+  url: string;
+  path: string;
+  method: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+};
 
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
+function makeServer(respond: () => Response | Promise<Response>) {
+  const requests: RecordedRequest[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = JSON.parse((await req.text()) || "{}") as Record<string, unknown>;
+      requests.push({
+        url: req.url,
+        path: new URL(req.url).pathname,
+        method: req.method,
+        headers: Object.fromEntries(req.headers.entries()),
+        body,
+      });
+      return respond();
+    },
   });
+  return { server, requests, url: String(server.url) };
+}
 
+describe("CheaperInferenceProvider", () => {
   it("reports the cheaper-inference provider name", () => {
     const { provider } = makeProvider();
     expect(provider.getProviderName()).toBe("cheaper-inference");
@@ -101,94 +122,78 @@ describe("CheaperInferenceProvider", () => {
   });
 
   it("records the cheaper-inference session provider tag", async () => {
-    globalThis.fetch = (async () =>
-      ({
-        ok: false,
-        status: 401,
-        statusText: "Unauthorized",
-        text: async () => "login fail",
-      }) as Response) as typeof fetch;
+    const { server, url } = makeServer(() => new Response("login fail", { status: 401 }));
+    try {
+      const { provider, sessionManager } = makeProvider({ apiUrl: url });
+      await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    const { provider, sessionManager } = makeProvider();
-    await provider.executeToolCall("system", "user", toolSchema, "session-id");
-
-    expect(sessionManager.lastCreateSessionArgs?.provider).toBe("cheaper-inference");
+      expect(sessionManager.lastCreateSessionArgs?.provider).toBe("cheaper-inference");
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("targets /chat/completions on Cheaper Inference and authenticates with Bearer", async () => {
-    let capturedUrl: string | undefined;
-    let capturedHeaders: Record<string, string> | undefined;
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      capturedUrl = String(input);
-      capturedHeaders = init?.headers as Record<string, string>;
-      return {
-        ok: false,
-        status: 401,
-        statusText: "Unauthorized",
-        text: async () => "login fail",
-      } as Response;
-    }) as typeof fetch;
+    const { server, url, requests } = makeServer(() => new Response("login fail", { status: 401 }));
+    try {
+      const { provider } = makeProvider({ apiUrl: url });
+      await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    const { provider } = makeProvider();
-    await provider.executeToolCall("system", "user", toolSchema, "session-id");
-
-    expect(capturedUrl).toBe(`${CHEAPER_INFERENCE_API_URL}/chat/completions`);
-    expect(capturedHeaders?.["Authorization"]).toBe("Bearer ci-test-key");
+      expect(requests[0]?.path).toBe("/chat/completions");
+      expect(requests[0]?.headers["authorization"]).toBe("Bearer ci-test-key");
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("sends the resolved default model in the request body", async () => {
-    let capturedBody: Record<string, unknown> | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      capturedBody = JSON.parse(String(init?.body ?? "{}"));
-      return {
-        ok: false,
-        status: 401,
-        statusText: "Unauthorized",
-        text: async () => "login fail",
-      } as Response;
-    }) as typeof fetch;
+    const { server, url, requests } = makeServer(() => new Response("login fail", { status: 401 }));
+    try {
+      const { provider } = makeProvider({ apiUrl: url });
+      await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    const { provider } = makeProvider();
-    await provider.executeToolCall("system", "user", toolSchema, "session-id");
-
-    expect(capturedBody?.model).toBe(CHEAPER_INFERENCE_DEFAULT_MODEL);
-    expect(capturedBody?.tool_choice).toBe("required");
-    expect(Array.isArray(capturedBody?.messages)).toBe(true);
-    expect(Array.isArray(capturedBody?.tools)).toBe(true);
+      const body = requests[0]?.body;
+      expect(body?.model).toBe(CHEAPER_INFERENCE_DEFAULT_MODEL);
+      expect(body?.tool_choice).toBe("required");
+      expect(Array.isArray(body?.messages)).toBe(true);
+      expect(Array.isArray(body?.tools)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("extracts tool input from an OpenAI-format response", async () => {
-    globalThis.fetch = (async () =>
-      ({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          choices: [
-            {
-              message: {
-                content: "",
-                tool_calls: [
-                  {
-                    id: "call_1",
-                    type: "function",
-                    function: {
-                      name: "save_memories",
-                      arguments: JSON.stringify({ memory: "captured fact" }),
-                    },
+    const { server, url } = makeServer(() =>
+      Response.json({
+        choices: [
+          {
+            message: {
+              content: "",
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: {
+                    name: "save_memories",
+                    arguments: JSON.stringify({ memory: "captured fact" }),
                   },
-                ],
-              },
-              finish_reason: "tool_calls",
+                },
+              ],
             },
-          ],
-        }),
-      }) as Response) as typeof fetch;
+            finish_reason: "tool_calls",
+          },
+        ],
+      })
+    );
+    try {
+      const { provider } = makeProvider({ apiUrl: url });
+      const result = await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    const { provider } = makeProvider();
-    const result = await provider.executeToolCall("system", "user", toolSchema, "session-id");
-
-    expect(result.success).toBe(true);
-    expect((result.data as any).memory).toBe("captured fact");
+      expect(result.success).toBe(true);
+      expect((result.data as any).memory).toBe("captured fact");
+    } finally {
+      server.stop(true);
+    }
   });
 });
 

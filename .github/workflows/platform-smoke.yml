@@ -12,7 +12,7 @@ on:
       - "scripts/verify-sqld-vector.mjs"
       - "scripts/smoke-test.mjs"
       - "web/**"
-      - "eslint.config.js"
+      - ".oxlintrc.json"
       - ".prettierrc"
       - ".prettierignore"
       - ".github/workflows/platform-smoke.yml"

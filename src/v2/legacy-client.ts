@@ -13,35 +13,20 @@ function textFromParts(parts: LegacyPart[] = []): string {
     .join("\n");
 }
 
-/**
- * Best-effort structured-output recovery for the v2 Generate API, which has
- * no json_schema enforcement: try the raw text as JSON, then a fenced
- * ```json block, then balanced top-level {...} objects (ignoring braces
- * inside strings). When several objects parse, prefer the last one (models
- * often emit a stub/example before the final answer). Returns undefined when
- * nothing parses — callers treat that as "no structured output".
- */
 function parseJson(text: string): unknown {
   const trimmed = text.trim();
 
-  // Direct JSON.
   try {
     return JSON.parse(trimmed);
-  } catch {
-    // fall through to recovery
-  }
+  } catch {}
 
-  // Fenced ```json block.
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1];
   if (fenced) {
     try {
       return JSON.parse(fenced);
-    } catch {
-      // fall through to the balanced-object scan
-    }
+    } catch {}
   }
 
-  // Scan every balanced top-level object; keep the last one that parses.
   const candidate = fenced ?? trimmed;
   let lastParsed: unknown;
   let searchFrom = 0;
@@ -69,9 +54,7 @@ function parseJson(text: string): unknown {
           found = true;
           try {
             lastParsed = JSON.parse(candidate.slice(start, i + 1));
-          } catch {
-            // Unparseable balanced span: keep scanning for a later object.
-          }
+          } catch {}
           searchFrom = i + 1;
           break;
         }
@@ -149,9 +132,6 @@ function schemaPrompt(body: any): string {
       [
         "Return only one JSON object matching this JSON Schema.",
         "Do not wrap the JSON in Markdown.",
-        // The v2 Generate API exposes no tools; models that follow a tool
-        // instruction from the system prompt would stall on a preamble and
-        // never answer. State the constraint explicitly.
         "No tools are available in this request. Do not attempt to call any tool; your entire reply must be only the JSON object.",
         JSON.stringify(body.format.schema),
       ].join("\n")
@@ -235,15 +215,6 @@ export function createLegacyClient(ctx: Context, toastRpc?: ToastEmitter) {
     app: { log: async () => ({ data: true }) },
     provider: {
       list: async () => {
-        // Provider connectivity must come from the real provider directory
-        // (ctx.provider.list(), ProviderInfo.activation), never from
-        // model.list: model ids carry the broker's providerID (e.g. every
-        // proxied model reports 'opencode'), which hides the actual enabled
-        // providers (e.g. 'newapi') and makes isProviderConnected deny a
-        // live provider. Disabled providers are excluded; auto/enabled pass;
-        // ids dedup. Errors propagate to the caller (the plugin init path
-        // already catches and logs) — an error must not be turned into a
-        // fabricated "no providers connected" result.
         const providers = await ctx.provider.list();
         const connected = [
           ...new Set(
@@ -278,9 +249,6 @@ export function createLegacyClient(ctx: Context, toastRpc?: ToastEmitter) {
         };
       },
       create: async () => {
-        // OpenCode v2's plugin Generate API is intentionally sessionless.
-        // Keep a synthetic id so the existing structured-output lifecycle can
-        // retain its create/prompt/delete contract without polluting history.
         const id = randomUUID();
         generatedSessions.add(id);
         return { data: { id } };
@@ -296,9 +264,6 @@ export function createLegacyClient(ctx: Context, toastRpc?: ToastEmitter) {
               ? {
                   providerID: body.model.providerID,
                   id: body.model.modelID,
-                  // V1 prompt bodies carry the variant as a sibling of `model`
-                  // (SessionPromptData.body.variant); the V2 Generate API
-                  // takes it inside the model object.
                   ...(typeof body.variant === "string" && body.variant
                     ? { variant: body.variant }
                     : {}),
@@ -372,10 +337,6 @@ export function legacyToolResult(value: unknown): { content: string; metadata?: 
   return { content: JSON.stringify(value ?? null) };
 }
 
-// opencode v2 no longer publishes `session.idle`, which is what
-// opencode-mem builds auto-capture and profile learning on. The
-// `/api/event` stream emits `session.execution.{succeeded,failed,interrupted}`
-// with `data.sessionID`; forwarding them under the legacy name is enough.
 const LEGACY_EVENT_ALIASES: Record<string, string> = {
   "session.compaction.ended": "session.compacted",
   "session.execution.succeeded": "session.idle",
@@ -432,8 +393,6 @@ export async function eventBelongsToLocation(
         resolve(sessionDirectory) === resolve(ctx.location.directory)
       );
     } catch {
-      // A buffered final event can outlive its host session. Only a pending,
-      // authored prompt in this project permits forwarding its evidence.
       if (
         typeof sessionID === "string" &&
         isCaptureEvidenceEvent(event.type) &&
@@ -449,9 +408,6 @@ export async function eventBelongsToLocation(
     }
   }
 
-  // Provider/model inventory updates are process-scoped ephemeral events with
-  // optional location. When the host omits location (and there is no session),
-  // still forward them so connectivity snapshots can refresh on late registration.
   const envelope = raw?.payload ?? raw;
   const source = envelope?.type === "sync" && envelope.syncEvent ? envelope.syncEvent : envelope;
   const rawType = typeof source?.type === "string" ? source.type.replace(/\.\d+$/, "") : undefined;

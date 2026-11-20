@@ -89,7 +89,6 @@ async function resolveContainerTag(fmContainerTag: string | undefined): Promise<
   if (fmContainerTag && typeof fmContainerTag === "string" && fmContainerTag.trim()) {
     return fmContainerTag.trim();
   }
-  // Lazy import: many subprocess tests mock tags.js with a partial export surface.
   const { getUserTagInfo } = await import("../tags.js");
   return getUserTagInfo().tag;
 }
@@ -153,8 +152,6 @@ async function upsertFromFile(
     });
   }
 
-  // Legacy vault files omit capture fields. Keep their surviving provenance and
-  // other index-only metadata; validated file values take precedence when present.
   const capture = {
     ...readCaptureMetadata(existingMetadata),
     ...readCaptureMetadata(fm),
@@ -199,14 +196,12 @@ async function upsertFromFile(
   await tursoShardManager.withScopeWriteLock(scope, scopeHash, async () => {
     if (existing) {
       const db = await tursoConnectionManager.getConnection(existing.dbPath);
-      // Same id may live on a different shard if containerTag changed — delete old first.
       await tursoVectorSearch.deleteVector(db, id);
       await tursoShardManager.decrementVectorCount(existing.shardId);
     }
 
     const shard = await tursoShardManager.getWriteShard(scope, scopeHash);
     const db = await tursoConnectionManager.getConnection(shard.dbPath);
-    // If somehow still present on write shard (same shard path), remove before insert.
     const stillThere = await tursoVectorSearch.getMemoryById(db, id);
     if (stillThere) {
       await tursoVectorSearch.deleteVector(db, id);
@@ -235,7 +230,6 @@ async function collectIndexedMarkdownIds(): Promise<
       const id = String(row.id);
       const meta = parseMetadata(row.metadata);
       const relPath = typeof meta.markdownRelPath === "string" ? meta.markdownRelPath : undefined;
-      // In markdown mode the vault is SoT: every indexed memory is treated as vault-backed.
       map.set(id, { shardId: shard.id, dbPath: shard.dbPath, relPath });
     }
   }
@@ -246,7 +240,6 @@ export async function reconcileMarkdownVault(): Promise<ReconcileResult> {
   return reconcileVault();
 }
 
-/** A watcher deletion validates the whole inventory but only removes its own path. */
 async function reconcileVault(deletedRelPath?: string): Promise<ReconcileResult> {
   const vaultRoot = CONFIG.markdownPath;
   if (!vaultRoot) {
@@ -276,8 +269,6 @@ async function reconcileVault(deletedRelPath?: string): Promise<ReconcileResult>
           ? parsed.frontmatter.id.trim()
           : markdownIdFromRelPath(file.relPath);
       seenIds.add(id);
-      // Use the same snapshot for identity and content. A second read could see
-      // a different id after an editor/sync write and delete the new row below.
       const outcome = await upsertFromFile(file, raw, parsed);
       if (outcome === "upserted") result.upserted++;
       else result.unchanged++;
@@ -297,8 +288,6 @@ async function reconcileVault(deletedRelPath?: string): Promise<ReconcileResult>
   if (result.errors.length > 0) {
     result.deletionSkipped = "incomplete-scan";
   } else if (files.length === 0 && indexed.size > 0) {
-    // An intentionally emptied vault cannot be distinguished from a missing
-    // mount or incomplete sync. Explicit memory deletion remains available.
     result.deletionSkipped = "empty-vault";
   }
 
@@ -398,9 +387,6 @@ export async function reindexVaultFile(relPath: string): Promise<void> {
   const { files } = scanMarkdownVault(vaultRoot);
   const file = files.find((f) => f.relPath === relPath);
   if (!file) {
-    // Watcher events also arrive when the vault disappears or cannot be read.
-    // Require the same complete, nonempty inventory as a full reconciliation.
-    // This also preserves an explicit id when a file was renamed in the vault.
     await reconcileVault(relPath);
     return;
   }

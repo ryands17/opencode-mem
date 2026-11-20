@@ -18,7 +18,7 @@ updates:
           - "minor"
           - "patch"
     ignore:
-      # ESLint 10 / typescript-eslint do not support TypeScript 7 yet (peer: <6.1.0).
+      # svelte-check and astro check do not support TypeScript 7 yet.
       - dependency-name: "typescript"
         versions: [">=7"]
         update-types: ["version-update:semver-major"]

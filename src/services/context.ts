@@ -16,7 +16,6 @@ interface MemoriesResponseMinimal {
   results?: MemoryResultMinimal[];
 }
 
-/** Stable prompt attribute; hides IEEE noise like 0.15000000000000002 after boosts. */
 function formatRetrievalScore(score: number): string {
   return String(Number(score.toFixed(3)));
 }

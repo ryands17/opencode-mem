@@ -18,15 +18,10 @@ const THREE_WAY_CENTROID_W2 = 0.45;
 const THREE_WAY_CENTROID_W3 = 0.1;
 const DIRECTION_VALIDATION_TOLERANCE = 0.03;
 
-/** Mirrors config.outerStructuredOutputTimeoutMs; kept local so fixture mocks of config.js stay minimal. */
 function outerStructuredTimeoutMs(configured: number | undefined): number {
   return (configured ?? 90_000) + 30_000;
 }
 
-/**
- * Gamma sampler (Marsaglia-Tsang 2000).
- * Used by sampleBeta for Thompson Sampling weak-hit upgrades.
- */
 function sampleGamma(shape: number): number {
   if (shape < 1) {
     const u = Math.random();
@@ -59,11 +54,6 @@ function sampleBeta(alpha: number, beta: number): number {
   return x / (x + y);
 }
 
-/**
- * Language-agnostic text normalization for embedding comparison.
- * Strips punctuation and collapses whitespace — the embedding model
- * handles semantic similarity naturally without word-level rules.
- */
 function normalizeDescription(text: string): string {
   return text
     .trim()
@@ -79,18 +69,8 @@ export class UserProfileManager {
   private db: TursoDb | null = null;
   private dbPath: string;
   private initPromise: Promise<void> | null = null;
-  // Cold-start buffers are keyed by profileId so items observed for one user never
-  // drain into another user's merge (cross-user contamination). The unattributed bucket
-  // (COLD_BUFFER_DEFAULT_KEY) only holds items from merges that ran without a profileId.
   private coldBuffers: Map<string, { preferences: any[]; patterns: any[]; workflows: any[] }>;
   private coldBufferPath: string;
-  /**
-   * Set when the last disk read of cold-buffer.json failed in a way that means
-   * "unknown on-disk state" (permission error, unparseable JSON, bad schema).
-   * A merge round must then fail closed instead of treating the data as empty
-   * and overwriting it. The constructor stays fail-safe: a non-critical cache
-   * read error must never crash the plugin import path, so it is only recorded.
-   */
   private coldBufferLoadError: Error | null = null;
   private dedupCheckedCache: Set<string> = new Set();
 
@@ -105,8 +85,6 @@ export class UserProfileManager {
     this.initPromise = null;
     this.dbPath = join(CONFIG.storagePath || "", USER_PROFILES_DB_NAME);
     this.coldBufferPath = join(CONFIG.storagePath || "", "cold-buffer.json");
-    // The new storage starts from its own on-disk snapshot. Keeping the old
-    // map would resurrect the previous storage's buckets on the next save.
     this.coldBuffers = this.loadColdBuffersFailSafe();
     this.coldBufferLoadError = null;
   }
@@ -121,8 +99,6 @@ export class UserProfileManager {
         this.dbPath = join(CONFIG.storagePath || "", USER_PROFILES_DB_NAME);
         const newColdBufferPath = join(CONFIG.storagePath || "", "cold-buffer.json");
         if (newColdBufferPath !== this.coldBufferPath) {
-          // storagePath changed since construction — do not keep draining or
-          // saving the previous storage's buckets.
           this.coldBufferPath = newColdBufferPath;
           this.coldBuffers = this.loadColdBuffersFailSafe();
         }
@@ -141,8 +117,6 @@ export class UserProfileManager {
 
   private async ready(): Promise<TursoDb> {
     await this.initialize();
-    // Connection manager is authoritative: another plugin instance's dispose
-    // may close/replace the pooled handle underneath a cached TursoDb (#443).
     if (this.db) {
       const current = await tursoConnectionManager.getConnection(this.dbPath);
       if (current === this.db) {
@@ -163,11 +137,6 @@ export class UserProfileManager {
     return { preferences: [], patterns: [], workflows: [] };
   }
 
-  /**
-   * Fail-safe wrapper for the constructor / reset() path. A non-critical cache
-   * read error must not crash plugin import, so the error is recorded and an
-   * empty map is returned; the next merge round then fails closed.
-   */
   private loadColdBuffersFailSafe(): Map<
     string,
     { preferences: any[]; patterns: any[]; workflows: any[] }
@@ -180,14 +149,6 @@ export class UserProfileManager {
     }
   }
 
-  /**
-   * Reads the complete cold-buffer snapshot from disk, strictly.
-   *
-   * A missing file (ENOENT) legitimately means "empty snapshot". Any other
-   * failure (permissions, unparseable JSON, malformed schema) means the
-   * on-disk state is unknown and MUST be thrown to the caller — treating it
-   * as empty would persist an empty snapshot over data we never read.
-   */
   private loadColdBuffers(): Map<
     string,
     { preferences: any[]; patterns: any[]; workflows: any[] }
@@ -218,20 +179,12 @@ export class UserProfileManager {
       );
     }
 
-    // Explicit legacy detection: the flat format is exactly the three category
-    // keys (each an array, at least one present) and nothing else. Anything
-    // else containing those keys is an unknown shape, not "legacy".
     const legacyKeys = ["preferences", "patterns", "workflows"];
     const presentLegacyKeys = legacyKeys.filter((k) => k in data);
     if (presentLegacyKeys.length > 0) {
       const onlyLegacyKeys = Object.keys(data).every((k) => legacyKeys.includes(k));
       const allArrays = legacyKeys.every((k) => !(k in data) || Array.isArray(data[k]));
       if (onlyLegacyKeys && allArrays) {
-        // Legacy flat format ({ preferences, patterns, workflows }) is
-        // cross-user contaminated and cannot be attributed to a profile, so
-        // it is dropped rather than replayed. This is the documented
-        // migration path, not a silent data loss: the format predates
-        // per-profile buckets.
         log("profile cold buffer: dropping legacy unattributed buffer", {
           keys: presentLegacyKeys,
         });
@@ -242,9 +195,6 @@ export class UserProfileManager {
       );
     }
 
-    // Per-profile buckets: every key must be a bucket whose category arrays
-    // hold real items. An invalid entry means the on-disk state is unknown —
-    // coercing it to [] would persist "known empty" over data we never read.
     let loaded = 0;
     for (const [pid, v] of Object.entries<any>(data)) {
       if (v === null || typeof v !== "object" || Array.isArray(v)) {
@@ -288,23 +238,11 @@ export class UserProfileManager {
     return map;
   }
 
-  /**
-   * Starts a merge round from the freshest complete on-disk snapshot.
-   *
-   * Cooperative learners take the learning lock, then re-read the snapshot at
-   * the start of every merge round, so a peer's persisted buckets are never
-   * clobbered by a stale in-memory map (mtime comparison cannot be trusted:
-   * same-mtime writes and clock rollback both hide peer updates). The loaded
-   * map is fixed for the whole round: every buffer mutation and save in this
-   * round goes through the same reference, so pending unsaved increments are
-   * never dropped by a mid-round reference swap.
-   */
   private beginColdBufferRound(): void {
     try {
       this.coldBuffers = this.loadColdBuffers();
       this.coldBufferLoadError = null;
     } catch (e) {
-      // Fail closed: the on-disk state is unknown, so no mutation may proceed.
       this.coldBufferLoadError = e instanceof Error ? e : new Error(String(e));
       throw this.coldBufferLoadError;
     }
@@ -324,12 +262,6 @@ export class UserProfileManager {
     return buf;
   }
 
-  /**
-   * Persists the current snapshot atomically: write a unique tmp file with
-   * O_EXCL (wx) and mode 0600, then rename over the target. Failures are
-   * thrown to the caller — swallowing them would let a round that never
-   * reached disk be reported as a successful learning merge.
-   */
   private saveColdBuffers(): void {
     const obj: Record<string, { preferences: any[]; patterns: any[]; workflows: any[] }> = {};
     for (const [pid, v] of this.coldBuffers.entries()) {
@@ -341,14 +273,9 @@ export class UserProfileManager {
     let fd: number | undefined;
     try {
       fd = openSync(tmpPath, "wx", 0o600);
-      // Byte-accurate payload: the string overload's third arg is a file
-      // position, not a string offset, and payload.length counts UTF-16
-      // units — both would corrupt multi-byte content on short writes.
       const payload = Buffer.from(JSON.stringify(obj), "utf8");
       let written = 0;
       while (written < payload.length) {
-        // Buffer overload: (fd, buffer, offset, length) — append at the
-        // current position; n <= 0 means no forward progress is possible.
         const n = writeSync(fd!, payload, written, payload.length - written);
         if (!(n > 0)) {
           throw new Error(`profile cold buffer: write stalled after ${written} bytes`);
@@ -362,15 +289,11 @@ export class UserProfileManager {
       if (fd !== undefined) {
         try {
           closeSync(fd);
-        } catch {
-          // best effort — the rename below is the cleanup that matters
-        }
+        } catch {}
       }
       try {
         unlinkSync(tmpPath);
-      } catch {
-        // tmp file may never have been created
-      }
+      } catch {}
       throw new Error(`profile cold buffer: save failed (${this.coldBufferPath}): ${String(e)}`, {
         cause: e,
       });
@@ -605,7 +528,6 @@ export class UserProfileManager {
         ? (item as any).evidence.length
         : 0;
 
-      // Remove inactive, low-evidence items using configured retention thresholds.
       if (ageDays > staleDays && evidenceCount < minEvidence) {
         log("profile decay: removed stale", {
           cat: (item as any).category || (item as any).description?.substring(0, 30),
@@ -627,9 +549,6 @@ export class UserProfileManager {
   async deleteProfile(profileId: string): Promise<void> {
     const db = await this.ready();
     await db.run(`DELETE FROM user_profiles WHERE id = ?`, [profileId]);
-    // Re-read the current on-disk snapshot before deleting the bucket: a
-    // stale in-memory map (peer wrote meanwhile) would resurrect the deleted
-    // profile's bucket in the very save that is supposed to remove it.
     this.beginColdBufferRound();
     if (this.coldBuffers.delete(profileId)) {
       this.saveColdBuffers();
@@ -683,11 +602,6 @@ export class UserProfileManager {
     embedService?: EmbeddingService,
     profileId?: string
   ): Promise<UserProfileData> {
-    // Cross-process safety: cooperative learners hold the learning lock and
-    // start every round from the freshest complete on-disk snapshot. Fails
-    // closed when the on-disk state is unknown (see beginColdBufferRound).
-    // The snapshot is fixed for the whole round — getColdBuffer/saveColdBuffers
-    // never swap the map mid-round, so pending unsaved increments survive.
     this.beginColdBufferRound();
 
     const merged: UserProfileData = {
@@ -790,8 +704,6 @@ export class UserProfileManager {
 
     let matchCount = 0;
     let newCount = 0;
-    // Scope the cold buffer to this profile so we only drain items observed for the
-    // same user (see COLD_BUFFER_DEFAULT_KEY for the unattributed case).
     const coldBuffer = this.getColdBuffer(profileId);
     if (useEmbedding && (coldBuffer as any)[itemType + "s"].length > 0) {
       const buffered = [...(coldBuffer as any)[itemType + "s"]];
@@ -1121,7 +1033,7 @@ export class UserProfileManager {
             (combined as any).frequency = ((existingItem as any).frequency || 1) + 1;
             (combined as any).evidence = [
               ...new Set([
-                (newItem as any).description || newItem.description,
+                newItem.description,
                 ...this.ensureArray((newItem as any).evidence),
                 ...this.ensureArray((existingItem as any as any).evidence),
               ]),
@@ -1275,9 +1187,7 @@ export class UserProfileManager {
           });
           initCentroid = Array.from(emb);
           initAnchor = initCentroid;
-        } catch {
-          // keep the item without an embedding centroid
-        }
+        } catch {}
       }
 
       existing.push(this.initItem(newItem, itemType, initCentroid, initAnchor) as T);
@@ -1299,11 +1209,6 @@ export class UserProfileManager {
     return existing as T[];
   }
 
-  /**
-   * Merge a new confirmed observation into an existing profile entry.
-   * ONLY call for confirmed matches (exact, strong sameCat/crossCat, Thompson upgrade).
-   * Do NOT call for forced merge or cross-validation — those handle fields directly.
-   */
   private mergeConfirmedMatch(
     existing: any,
     newItem: any,
@@ -1376,11 +1281,6 @@ export class UserProfileManager {
     return item;
   }
 
-  /**
-   * Three-way merge: item1 + item2 + newItem → single combined entry.
-   * Called when top-1 and top-2 both strongly match the same new observation
-   * within the same category, confirming they describe the same behavior.
-   */
   private combineThree(
     item1: any,
     item2: any,
@@ -1951,7 +1851,7 @@ Generate a concise, abstract description of the user's general behavioral tenden
                 const arr = Array.from(e) as number[];
                 return acc.map((v, i) => v + (arr[i] ?? 0));
               },
-              new Array((evEmbs[0] as any).length).fill(0) as number[]
+              Array.from({ length: (evEmbs[0] as any).length }, () => 0) as number[]
             );
             const evCentroid = l2Normalize(sumVec);
 

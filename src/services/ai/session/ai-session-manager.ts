@@ -53,8 +53,6 @@ export class AISessionManager {
 
   private async ready(): Promise<TursoDb> {
     await this.initialize();
-    // Connection manager is authoritative: another plugin instance's dispose
-    // may close/replace the pooled handle underneath a cached TursoDb (#443).
     if (this.db) {
       const current = await tursoConnectionManager.getConnection(this.dbPath);
       if (current === this.db) {

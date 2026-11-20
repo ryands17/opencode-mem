@@ -166,10 +166,6 @@ describe("project scope identity", () => {
 });
 
 describe("project marker (.opencode-mem-project)", () => {
-  // Build a workspace containing several independent git repositories, like a
-  // tree managed by Google `repo` or a monorepo checkout. Without a marker
-  // each sub-repo is its own project; with one they all collapse onto the
-  // workspace root.
   function createMultiRepoWorkspace(): {
     workspaceDir: string;
     repoA: string;
@@ -224,8 +220,6 @@ describe("project marker (.opencode-mem-project)", () => {
 
   it("the marker wins over an inner git repo and drops its remote url", () => {
     const { workspaceDir, repoA } = createMultiRepoWorkspace();
-    // Give the inner repo a remote so we can assert it is intentionally ignored
-    // once the workspace marker takes over identity.
     run("git remote add origin https://example.com/repo-a.git", repoA);
     writeFileSync(join(workspaceDir, ".opencode-mem-project"), "");
 
@@ -242,7 +236,6 @@ describe("project marker (.opencode-mem-project)", () => {
 
     writeFileSync(join(workspaceDir, ".opencode-mem-project"), "");
     expect(findMarkerProjectRoot(repoA)).toBe(workspaceDir);
-    // A session started exactly at the marker root still resolves to itself.
     expect(findMarkerProjectRoot(workspaceDir)).toBe(workspaceDir);
   });
 });

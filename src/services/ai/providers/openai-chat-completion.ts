@@ -153,7 +153,6 @@ export async function parseChatCompletionStream(response: Response): Promise<unk
     if (!choice) continue;
     if (choice.finish_reason) finishReason = choice.finish_reason;
 
-    // Some gateways emit a full message object instead of deltas.
     if (choice.message) {
       if (typeof choice.message.content === "string") {
         content = choice.message.content;
@@ -230,20 +229,14 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
     return true;
   }
 
-  /** Provider tag used for AI session storage and diagnostics. */
   protected sessionProviderTag(): AIProviderType {
     return "openai-chat";
   }
 
-  /**
-   * Resolve the OpenAI-compatible API base URL.
-   * Trailing slashes are stripped so `${base}/chat/completions` is well-formed.
-   */
   protected resolveEndpoint(): string {
     return (this.config.apiUrl || "").trim().replace(/\/+$/, "");
   }
 
-  /** Resolve the model ID sent in the request body. */
   protected resolveModel(): string {
     return this.config.model;
   }
@@ -582,9 +575,7 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
                         if (repaired !== fixed) {
                           try {
                             return JSON.parse(repaired);
-                          } catch {
-                            // ignore and fall through to the original parse error
-                          }
+                          } catch {}
                         }
                       }
                     }

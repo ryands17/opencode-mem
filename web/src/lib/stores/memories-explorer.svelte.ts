@@ -173,9 +173,7 @@ export function createMemoriesExplorer() {
         host === "::1" ||
         (host.startsWith("::ffff:") && host.endsWith("127.0.0.1"));
       showAuthWarning = !loopback;
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   }
 
   function performSearch() {
@@ -519,8 +517,6 @@ export function createMemoriesExplorer() {
         const considered = result.data?.groupsConsidered ?? 0;
         const merged = result.data?.groupsMerged ?? 0;
         const partialMsg = t("toast-dreaming-partial", { failed, considered });
-        // Nothing merged + any failures: treat as error (includes provider abort).
-        // Mixed merge+fail stays a warning.
         if (merged === 0) {
           toast.error(partialMsg);
         } else {

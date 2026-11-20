@@ -17,9 +17,11 @@ import { log } from "../logger.js";
 const OPERATION_LOCK = ".turso-operation.lock";
 const LEGACY_MIGRATION_LOCK = ".turso-migrate.lock";
 
-// Thirty minutes of progress silence is far longer than a local 50-row insert
-// batch, shard swap, or individual embedding request. Long migrations heartbeat
-// at those boundaries, so total migration duration is not limited by this lease.
+/**
+ * Thirty minutes of progress silence is far longer than a local 50-row insert
+ * batch, shard swap, or individual embedding request. Long migrations heartbeat
+ * at those boundaries, so total migration duration is not limited by this lease.
+ */
 export const TURSO_LOCK_STALE_MS = 30 * 60 * 1000;
 
 interface LockState {
@@ -57,12 +59,9 @@ export function unlinkTursoLockIfUnchanged(
 ): boolean {
   try {
     if (!sameFile(identity, statSync(path))) return false;
-    // A nanosecond stat → unlink race remains without interprocess locking.
-    // The true owner bounds it by aborting at its next progress heartbeat.
     unlinkSync(path);
     return true;
   } catch {
-    // Missing or held open (Windows): preserve best-effort cleanup semantics.
     return false;
   }
 }
@@ -76,7 +75,6 @@ export function releaseTursoLock(path: string, expectedId: string): void {
     const state = JSON.parse(readFileSync(fd, "utf-8")) as LockState | null;
     if (state?.id === expectedId) unlinkTursoLockIfUnchanged(path, identity);
   } catch {
-    // Missing, replaced, corrupt, or held open: cleanup must not block writes.
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
@@ -115,7 +113,6 @@ export function readLiveTursoLock(path: string): LockState | null {
       }
     }
   } catch {
-    // Corrupt locks are stale and removed below.
   } finally {
     closeSync(fd);
   }
@@ -132,17 +129,12 @@ export function readLiveTursoLock(path: string): LockState | null {
   try {
     log("WARNING: Invalidating stale Turso migration lock", details);
   } catch {
-    // Audit even when the log destination is unavailable; logging must not
-    // turn an unowned lock into a permanent write outage.
     console.warn("WARNING: Invalidating stale Turso migration lock", details);
   }
   if (!removed) {
     try {
-      // A replacement must be evaluated on its own lease, not the stale read.
       if (!sameFile(identity, statSync(path))) return readLiveTursoLock(path);
-    } catch {
-      // Another owner already removed it.
-    }
+    } catch {}
   }
   return null;
 }
@@ -151,15 +143,12 @@ export function readLiveTursoLock(path: string): LockState | null {
 export function heartbeatTursoLock(path: string, expectedId: string): void {
   let fd: number | undefined;
   try {
-    // Open without creating, and update the same file we checked. If another
-    // process replaces the path, we must not overwrite its new lease.
     fd = openSync(path, "r+");
     const previous = readFileSync(fd, "utf-8");
     const state = JSON.parse(previous) as LockState | null;
     if (state?.id !== expectedId) throw new Error("lock owner changed");
     const updated = JSON.stringify({ ...state, timestamp: new Date().toISOString() });
-    // Keep any shortened tail as JSON whitespace rather than leaving a corrupt
-    // window between a rewrite and truncate (older locks may be pretty-printed).
+    // WARNING: pad any shortened tail as JSON whitespace; an unpadded rewrite leaves a corrupt window between rewrite and truncate.
     const padding = Math.max(0, Buffer.byteLength(previous) - Buffer.byteLength(updated));
     const contents = Buffer.from(updated + " ".repeat(padding));
     writeSync(fd, contents, 0, contents.length, 0);

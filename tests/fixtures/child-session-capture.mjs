@@ -23,7 +23,6 @@ const config = {
 };
 const captures = [];
 const sessionGetCalls = [];
-// sessionID -> { parentID?: string, failGet?: boolean }
 const childSessions = new Map();
 
 mock.module(moduleUrl("config"), () => ({
@@ -128,23 +127,19 @@ async function v1Prompt(sessionID, messageID, text) {
 
 const output = {};
 
-// Default: captureChildSessions false (V1 chat.message).
 childSessions.set("v1-child", { parentID: "ses_parent" });
 childSessions.set("v1-top", {});
 await v1Prompt("v1-child", "m-child", "orchestrator prompt");
 await v1Prompt("v1-top", "m-top", "human prompt");
 
-// Repeated messages in one session hit session.get once (lookup cache).
 childSessions.set("v1-cache", { parentID: "ses_parent" });
 for (let i = 0; i < 3; i++) {
   await v1Prompt("v1-cache", `m-cache-${i}`, `repeat ${i}`);
 }
 
-// Lookup failure fails open: the prompt is still saved.
 childSessions.set("v1-fail", { parentID: "ses_parent", failGet: true });
 await v1Prompt("v1-fail", "m-fail", "fail-open prompt");
 
-// Default: V2 memoryContext.capturePrompt bridge.
 const host = await v2Adapter();
 childSessions.set("v2-child", { parentID: "ses_parent" });
 childSessions.set("v2-top", {});
@@ -152,7 +147,6 @@ await host.prompt("v2-child", "v2 orchestrator prompt", "mv2-child");
 await host.prompt("v2-top", "v2 human prompt", "mv2-top");
 await host.cleanup();
 
-// memoryContext.load must also skip child sessions (reload/rehydrate path).
 childSessions.set("load-child", { parentID: "ses_parent" });
 childSessions.set("load-top", {});
 childSessions.set("load-empty-parent", { parentID: "" });
@@ -160,11 +154,9 @@ output.loadChild = await plugin.memoryContext.load("load-child");
 output.loadTop = await plugin.memoryContext.load("load-top");
 output.loadEmptyParent = await plugin.memoryContext.load("load-empty-parent");
 
-// Opt-in: captureChildSessions true also allows load for children.
 config.chatMessage.captureChildSessions = true;
 output.loadChildOptIn = await plugin.memoryContext.load("load-child");
 
-// Opt-in: captureChildSessions true.
 childSessions.set("v1-opt", { parentID: "ses_parent" });
 await v1Prompt("v1-opt", "m-opt", "opt-in child prompt");
 const host2 = await v2Adapter();

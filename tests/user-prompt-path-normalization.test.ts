@@ -21,9 +21,7 @@ afterAll(() => {
   process.env.USERPROFILE = originalUserProfile;
   try {
     rmSync(sandbox, { recursive: true, force: true });
-  } catch {
-    // ignore
-  }
+  } catch {}
 });
 
 describe("UserPromptManager project path normalization", () => {
@@ -39,9 +37,7 @@ describe("UserPromptManager project path normalization", () => {
     for (const id of activeIds) {
       try {
         await mgr.deletePrompt(id);
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
   });
 

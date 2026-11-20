@@ -146,7 +146,7 @@ describe("durable pending capture evidence", () => {
         await mgr.saveCaptureEvidence(id, "/project", `${j}`, "small synthetic evidence");
     }
     expect(await count()).toBe(256);
-  }, 60_000);
+  });
 
   it("cleans evidence on capture, bulk capture, delete, and age cleanup", async () => {
     const ids = [];

@@ -20,7 +20,6 @@ function applyTheme(theme: Theme) {
   currentTheme = theme;
   if (typeof document !== "undefined") {
     const root = document.documentElement;
-    // Disable staggered CSS transitions so light↔dark flips in one paint.
     root.classList.add("theme-switching");
     root.classList.toggle("dark", theme === "dark");
     localStorage.setItem(STORAGE_KEY, theme);

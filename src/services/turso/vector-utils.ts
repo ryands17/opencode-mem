@@ -61,7 +61,6 @@ export function parseExtractedVector(value: unknown): Float32Array | null {
 export function distanceToSimilarity(distance: number): number {
   const similarity = 1 - Number(distance);
   if (!Number.isFinite(similarity)) return 0;
-  // Clamp float artifacts (docs: cos-distance can be slightly negative near exact matches).
   return Math.max(0, Math.min(1, similarity));
 }
 

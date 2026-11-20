@@ -1,10 +1,3 @@
-/**
- * Regression guard — verifies opencode-mem satisfies the OpenCode 1.3.x plugin-loader contract.
- * Modern contract: type PluginModule = { id?: string; server: Plugin; tui?: never }
- *
- * All assertions here must PASS. This file guards the fixed contract from regressions.
- */
-
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 
@@ -59,27 +52,21 @@ describe("OpenCode 1.3.x plugin-loader contract", () => {
     const defaultExport = mod.default as Record<string, unknown> | null | undefined;
 
     expect(typeof defaultExport?.["id"]).toBe("string");
-    expect((defaultExport?.["id"] as string).trim().length).toBeGreaterThan(0);
+    expect(String(defaultExport?.["id"]).trim().length).toBeGreaterThan(0);
     expect(defaultExport?.["id"]).toBe(pkg["name"]);
   });
 
   it("server() invocation returns hooks with expected keys (or server is callable)", async () => {
     const mod = (await loadDistPlugin()) as { default: Record<string, unknown> };
     const serverFn = mod.default["server"];
-    // Verify the callable surface is correct regardless of warmup outcome
     expect(typeof serverFn).toBe("function");
 
-    // This is a loader-contract test, not an embedding smoke test. Mark the
-    // process-global warmup as complete so server() does not load the native
-    // ONNX stack in the background. Bun 1.3.14 can crash during process teardown
-    // after that native addon was loaded, even though every assertion passed.
+    // WARNING: keep the process-global warmup marker — loading the native ONNX stack in the background crashes Bun 1.3.14 at process teardown.
     const warmupKey = Symbol.for("opencode-mem.plugin.warmedup");
     const hadWarmupState = Object.prototype.hasOwnProperty.call(globalThis, warmupKey);
     const previousWarmupState = Reflect.get(globalThis, warmupKey);
     Reflect.set(globalThis, warmupKey, true);
 
-    // Attempt to invoke server with a minimal mock PluginInput.
-    // If it succeeds, assert the returned hooks have the expected shape.
     const mockInput = {
       client: {},
       project: {},
@@ -93,12 +80,9 @@ describe("OpenCode 1.3.x plugin-loader contract", () => {
       const hooks = (await (serverFn as (input: unknown) => Promise<Record<string, unknown>>)(
         mockInput
       )) as Record<string, unknown>;
-      // If we reach here, assert expected hook keys exist
       expect(typeof hooks["chat.message"]).toBe("function");
       expect(typeof hooks["event"]).toBe("function");
     } catch {
-      // Other runtime setup failures in the minimal test environment are acceptable.
-      // The callable surface assertion above is sufficient for contract verification.
     } finally {
       if (hadWarmupState) {
         Reflect.set(globalThis, warmupKey, previousWarmupState);

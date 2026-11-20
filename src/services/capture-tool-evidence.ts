@@ -1,8 +1,6 @@
 import { sanitizeMemoryContent } from "./privacy.js";
 import { truncateToMaxBytes, utf8ByteLength } from "../utils/context-limit.js";
 
-// Fixed, additive budgets: raising the general capture context limit must not
-// turn tool evidence into a log archive (including provider session history).
 export const MAX_CAPTURE_TOOL_RESULT_BYTES = 2048;
 export const MAX_CAPTURE_TOOL_EVIDENCE_BYTES = 16384;
 export const MAX_CAPTURE_TOOL_CALLS = 32;
@@ -31,17 +29,12 @@ export function extractToolOutcome(state: any): Pick<ToolCallInfo, "status" | "o
   ].includes(status)
     ? status
     : "unknown";
-  // Completed describes the invocation, not command/test success. Pending input
-  // must not acquire a result just because an unrelated output field exists.
   if (!["completed", "error", "failed", "interrupted", "cancelled"].includes(knownStatus)) {
     return { status: knownStatus };
   }
   const parts: string[] = [];
-  if (typeof state?.output === "string") parts.push(state.output); // v1
+  if (typeof state?.output === "string") parts.push(state.output);
   if (Array.isArray(state?.content)) {
-    // Join V2 text without inventing separators: a host can split a private
-    // delimiter or credential inside a block boundary. Preserve source newlines
-    // but prefer safe redaction over adding presentation-only block spacing.
     const textParts = state.content
       .filter((part: any) => part?.type === "text" && typeof part.text === "string")
       .map((part: any) => part.text);
@@ -86,8 +79,6 @@ export function buildToolEvidenceBlock(
   let left = 0;
   let right = entries.length - 1;
   while (left <= right) {
-    // Prefer the latest attempt when a small budget cannot fit a pair. This
-    // avoids keeping an early success while silently discarding a later failure.
     const back = entries[right]!;
     if (used + utf8ByteLength(back) + 1 > budget) break;
     last.unshift(back);
@@ -100,8 +91,6 @@ export function buildToolEvidenceBlock(
     used += utf8ByteLength(front) + 1;
     left++;
   }
-  // Tiny custom context budgets still get explicit uncertainty, not a chopped
-  // success fragment from a result whose failure line was discarded.
   return truncateToMaxBytes(header + first.join("\n") + OMITTED + last.join("\n"), budget, OMITTED);
 }
 

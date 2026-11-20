@@ -19,12 +19,9 @@ describe("skills API handlers", () => {
     const { skillsManager } = await import("../src/services/skills/skills-manager.js");
     skillsManager.reset();
     await tursoConnectionManager.closeAll();
-    await new Promise((r) => setTimeout(r, 50));
     try {
       rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // ignore
-    }
+    } catch {}
   });
 
   it("supports CRUD through handlers", async () => {

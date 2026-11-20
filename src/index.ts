@@ -97,9 +97,6 @@ export {
 } from "./services/auto-capture-config-status.js";
 
 export function isStructuredSummaryPromptMessage(userMessage: string): boolean {
-  // This is the plugin's own structured-summary or profile-analysis request.
-  // OpenCode echoes it through chat.message like a normal user message, but
-  // capturing it would create self-referential memories / an infinite learning loop.
   if (userMessage.includes("# User Profile Analysis")) {
     return true;
   }
@@ -237,7 +234,6 @@ export async function resolveSessionModel(
 }
 
 async function isInternalCaptureSession(client: unknown, sessionID: string): Promise<boolean> {
-  // Fast path: sessions we created ourselves (survives brief post-delete window).
   if (isTrackedInternalCaptureSession(sessionID)) {
     return true;
   }
@@ -250,7 +246,6 @@ async function isInternalCaptureSession(client: unknown, sessionID: string): Pro
     }
   )?.session;
 
-  // Plugin host client uses path-based args (same as session.messages).
   if (typeof sessionClient?.get === "function") {
     try {
       const response = await sessionClient.get({ path: { id: sessionID } });
@@ -276,11 +271,6 @@ async function isInternalCaptureSession(client: unknown, sessionID: string): Pro
   return false;
 }
 
-/**
- * Bounded per-plugin cache of sessionID → has-parentID lookups. parentID never
- * changes for a session, so each session pays one session.get across all its
- * messages instead of one per message.
- */
 const CHILD_SESSION_LOOKUPS: Map<string, boolean> = new Map();
 const CHILD_SESSION_LOOKUP_CACHE_LIMIT = 1000;
 
@@ -291,7 +281,6 @@ function extractSessionParentID(response: unknown): string | undefined {
     parentID?: string;
   };
   const parentID = obj.data?.parentID ?? obj.parentID;
-  // Empty string is not a real parent link (OpenCode uses a non-empty id).
   return typeof parentID === "string" && parentID.length > 0 ? parentID : undefined;
 }
 
@@ -308,7 +297,6 @@ async function isChildSession(client: unknown, sessionID: string): Promise<boole
   )?.session;
 
   if (typeof sessionClient?.get !== "function") {
-    // Fail open (capture proceeds) — same behaviour as before this check existed.
     log("child session check: session.get unavailable", { sessionID });
     return false;
   }
@@ -317,15 +305,12 @@ async function isChildSession(client: unknown, sessionID: string): Promise<boole
     const hasParent =
       extractSessionParentID(await sessionClient.get({ path: { id: sessionID } })) !== undefined;
     if (CHILD_SESSION_LOOKUPS.size >= CHILD_SESSION_LOOKUP_CACHE_LIMIT) {
-      // Insertion-order eviction keeps the map bounded without timers.
       const oldest = CHILD_SESSION_LOOKUPS.keys().next().value;
       if (oldest !== undefined) CHILD_SESSION_LOOKUPS.delete(oldest);
     }
     CHILD_SESSION_LOOKUPS.set(sessionID, hasParent);
     return hasParent;
   } catch (error) {
-    // Fail open on lookup failure and do not cache: a transient host error
-    // must not permanently misclassify the session.
     log("child session check via session.get failed", { sessionID, error: String(error) });
     return false;
   }
@@ -338,7 +323,6 @@ export function applyStructuredOutputAgentConfig(cfg: { agent?: Record<string, u
     [STRUCTURED_OUTPUT_AGENT]: {
       description: "Internal least-privilege agent for opencode-mem structured output",
       mode: "subagent",
-      // OpenCode reads `steps` at runtime; SDK AgentConfig also documents maxSteps.
       steps: STRUCTURED_OUTPUT_MAX_STEPS,
       maxSteps: STRUCTURED_OUTPUT_MAX_STEPS,
       tools: STRUCTURED_OUTPUT_TOOLS,
@@ -346,9 +330,6 @@ export function applyStructuredOutputAgentConfig(cfg: { agent?: Record<string, u
         "*": "deny",
         StructuredOutput: "allow",
       },
-      // OpenCode maps format:json_schema to tool_choice:"required". Thinking-enabled
-      // models (e.g. DeepSeek V4) reject that combo — disable thinking for this
-      // internal agent so auto-capture / profile learning can force StructuredOutput (#253).
       options: {
         thinking: { type: "disabled" },
       },
@@ -367,7 +348,7 @@ export function applyStructuredOutputChatParams(
 ): void {
   if (!output || input.agent !== STRUCTURED_OUTPUT_AGENT) return;
   output.options = {
-    ...(output.options ?? {}),
+    ...output.options,
     thinking: { type: "disabled" },
   };
 }
@@ -384,9 +365,6 @@ export async function configureOpencodeHostTransport(ctx: {
     setStructuredOutputTimeoutConfig,
   } = await loadOpencodeProvider();
   resetHostFetch();
-  // Configured structured-output timeout (opencodeTimeoutMs): injected here so
-  // the lazily-bundled provider module never imports config.js (whose import
-  // side effects would leak into subprocess gates and loader bundles).
   setStructuredOutputTimeoutConfig(CONFIG.opencodeTimeoutMs);
   const hostConfig = getHostClientConfig(ctx);
   if (hostConfig.fetch) {
@@ -432,13 +410,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   startAutoUpdate(ctx, CONFIG.autoUpdate);
   const tags = getTags(directory);
   let webServer: WebServer | null = null;
-  // One idle debounce timer per session: a new idle for the same session resets
-  // its own timer, but must never cancel another session's pending capture
-  // (starving a finished session's summary forever once no further idle
-  // events arrive).
   const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  // Aborted on plugin dispose: queued-but-not-started auto-capture jobs are
-  // skipped; in-flight work keeps its original (uncancellable) semantics.
   const pluginLifetime = new AbortController();
   let cleanedUp = false;
   const captureEvidence = new CaptureEvidenceRecorder(directory);
@@ -457,14 +429,11 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     }
   };
 
-  // Lease the shared Turso pool for this plugin instance. Several OpenCode
-  // sessions share one process; dispose must not closeAll while siblings live (#443).
   retainPluginTurso();
 
   const GLOBAL_PLUGIN_WARMUP_KEY = Symbol.for("opencode-mem.plugin.warmedup");
 
   if (!(globalThis as any)[GLOBAL_PLUGIN_WARMUP_KEY] && isConfigured()) {
-    // Fire-and-forget: DB ready + embedding model must not block plugin init.
     (async () => {
       try {
         await memoryClient.warmup();
@@ -477,10 +446,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
 
   await configureOpencodeHostTransport(ctx);
 
-  // Re-reads the provider directory into the connectivity snapshot. Errors
-  // are logged and the previous snapshot retained. The host registers
-  // user-config providers after plugin setup (provider.updated/model.updated),
-  // so this runs again on those events and on connectivity-gate misses.
   const refreshConnectedProviders = async (): Promise<void> => {
     try {
       const providerResult = await ctx.client.provider.list();
@@ -501,9 +466,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     }
   };
 
-  // Coalesce refresh triggers into one in-flight pass plus trailing drain.
-  // Event handlers and ensureProviderConnected (gate miss) share this path so
-  // concurrent list() calls collapse; callers can await the same promise.
   let refreshInFlight: Promise<void> | undefined;
   let refreshQueued = false;
   const runCoalescedRefresh = (): Promise<void> => {
@@ -527,8 +489,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
 
   void runCoalescedRefresh();
 
-  // Gate miss awaits the same coalesced refresh; cleared on dispose so no
-  // refresh fires afterwards. Only clear our own refresher identity.
   const { setConnectedProvidersRefresher, clearConnectedProvidersRefresher } =
     await loadOpencodeProvider();
   const providerRefresher = async () => {
@@ -676,16 +636,12 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     pluginLifetime.abort();
     for (const timer of idleTimers.values()) clearTimeout(timer);
     idleTimers.clear();
-    // Drain in-flight (and already-queued-before-abort) captures before
-    // closing storage: abort only skips not-yet-started jobs.
     await captureEvidence.drain();
     await awaitCaptureDrain();
     try {
       const { stopMarkdownBackend } = await import("./services/markdown/backend.js");
       stopMarkdownBackend();
-    } catch {
-      /* ignore */
-    }
+    } catch {}
     if (webServer) await webServer.stop();
     if (memoryClient) await memoryClient.close();
   };
@@ -697,10 +653,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
       log("Shutdown error", { error: String(error) });
       process.exitCode = 1;
     }
-    // Registering listeners disables the runtime's default termination.
-    // After cleanup, remove ours and re-raise so the host can exit (#408).
-    // Avoid forced process exit here — the host may still be tearing down
-    // native resources registered by other plugins (#114).
     process.off("SIGINT", shutdownHandler);
     process.off("SIGTERM", shutdownHandler);
     process.kill(process.pid, signal);
@@ -712,13 +664,10 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     }
   };
   const exitHandler = () => {
-    // Best-effort sync close when the host exits without SIGINT/SIGTERM.
     if (!cleanedUp) {
       try {
         tursoConnectionManager.closeAllSync();
-      } catch {
-        // ignore — module may already be torn down
-      }
+      } catch {}
     }
   };
 
@@ -738,8 +687,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
 
   void resumePendingCaptures();
 
-  // Capture remains tied to authored prompts. V2 can rebuild request context
-  // independently when its in-memory session cache is lost on host/plugin reload.
   const capturePrompt = async (
     sessionID: string,
     messageID: string,
@@ -753,9 +700,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
 
     if (textParts.length === 0) return false;
 
-    // Host- and plugin-injected blocks reach this hook through the same
-    // parts array as real user input. Recording them would train both
-    // auto-capture and profile learning on another plugin's boilerplate.
     const authoredParts = CONFIG.chatMessage.filterInjectedPrompts
       ? filterInjectedParts(textParts, CONFIG.chatMessage.injectionMarkers)
       : textParts;
@@ -768,11 +712,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
       return false;
     }
 
-    // Orchestrator child sessions (task/subagent) have a parentID; their
-    // "user" messages are parent-agent prompts, not human input. Skipping the
-    // save keeps them out of auto-capture and profile learning. Like other
-    // non-authored turns, a false return also skips memory-context injection
-    // for that turn (V1 chat.message returns early; the V2 adapter suppresses it).
     if (!CONFIG.chatMessage.captureChildSessions && (await isChildSession(ctx.client, sessionID))) {
       log("skipping child-session prompt capture", { sessionID });
       return false;
@@ -787,8 +726,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     const queryText = await userPromptManager.getLatestPromptTextForSession(sessionID);
     const memories = await loadRecallMemoriesForSession(tags.project.tag, sessionID, queryText);
 
-    // Still format an empty project-memory payload so injectProfile can emit
-    // <user_profile> on its own (e.g. chatMessage.maxMemories: 0).
     const projectMemories = {
       results: memories.map((m) => ({
         similarity: m.similarity,
@@ -807,9 +744,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   };
 
   return {
-    // V1 ignores this extra hook; the V2 adapter uses it during plugin reload.
     dispose: disposePlugin,
-    // Internal V2 bridge; V1 still injects synthetic parts through chat.message.
     memoryContext: {
       ownsPendingCaptureSession: async (sessionID: string) =>
         !cleanedUp &&
@@ -832,9 +767,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
           !CONFIG.chatMessage.enabled ||
           isInternalStructuredSession(sessionID) ||
           (await isInternalCaptureSession(ctx.client, sessionID)) ||
-          // Same child-session gate as capture: after plugin reload the V2
-          // context hook can rehydrate via load() without going through
-          // capturePrompt, so skip injection for orchestrator children too.
           (!CONFIG.chatMessage.captureChildSessions &&
             (await isChildSession(ctx.client, sessionID)))
         ) {
@@ -867,8 +799,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
         const isAfterCompaction = lastMessage?.info?.summary === true;
 
-        // Relevance/both re-inject every authored turn so the query matches the
-        // current message (issue #460). Legacy recent keeps injectOn: first.
         const shouldInject =
           shouldRefreshRecallOnPrompt(
             CONFIG.chatMessage.recall ?? "relevant",
@@ -919,8 +849,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
 
       const sessionModel = input?.model;
       if (typeof sessionModel?.providerID === "string" && typeof sessionModel?.id === "string") {
-        // Keep the host-resolved model for inherit on idle paths (profile
-        // learning, dedup, …). OpenCode v2 no longer writes model.json (#453).
         rememberSessionModel(sessionModel.providerID, sessionModel.id);
       }
 
@@ -1137,7 +1065,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
 
                 const userId = tags.user.userEmail || "unknown";
 
-                // --- WRITE: explicit preference ---
                 if (args.content !== undefined) {
                   const trimmed = args.content.trim();
                   if (!trimmed) {
@@ -1160,9 +1087,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                     return JSON.stringify({ success: false, error: "Private content blocked" });
                   }
 
-                  // Hold the same non-reentrant learning lock as performUserProfileLearning
-                  // so mergeProfileData's cold-buffer round cannot race learning. Do not
-                  // acquire inside mergeProfileData — learning already holds this lock.
+                  // WARNING: performUserProfileLearning already holds this non-reentrant learning lock; acquiring it again inside mergeProfileData would deadlock.
                   const releaseProfileWriteLock = await tryAcquireProfileLearningLock(directory);
                   if (!releaseProfileWriteLock) {
                     return JSON.stringify({
@@ -1223,7 +1148,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                   }
                 }
 
-                // --- READ: no content provided ---
                 const profile = await userProfileManager.getActiveProfile(userId);
                 if (!profile) return JSON.stringify({ success: true, profile: null });
                 const pData = toPublicProfileData(JSON.parse(profile.profileData));
@@ -1327,13 +1251,11 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         if (event.type === "session.deleted") {
           const sessionID = event.properties?.sessionID ?? event.properties?.info?.id;
           if (typeof sessionID === "string") {
-            // Deletion supersedes a pending idle debounce for the same session.
             const pendingIdle = idleTimers.get(sessionID);
             if (pendingIdle) {
               clearTimeout(pendingIdle);
               idleTimers.delete(sessionID);
             }
-            // Evidence checkpoint is best-effort above; still attempt recovery.
             void performAutoCapture(ctx, sessionID, directory, {
               signal: pluginLifetime.signal,
               preferSavedEvidence: true,
@@ -1342,16 +1264,11 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         }
       }
 
-      // Late host provider registration: user-config providers can appear
-      // (or disappear) after plugin setup; refresh the connectivity snapshot.
       if (event.type === "provider.updated" || event.type === "model.updated") {
         if (!cleanedUp) runCoalescedRefresh();
         return;
       }
 
-      // Client-side step watchdog for internal structured-output sessions (#278).
-      // OpenCode's agent.steps soft-cap does not hard-stop json_schema loops when
-      // forced StructuredOutput keeps failing (e.g. opencode-claude-auth).
       if (event.type === "message.part.updated") {
         const part = event.properties?.part;
         if (part?.type === "step-start" && typeof part.sessionID === "string") {
@@ -1381,19 +1298,13 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         const sessionID = event.properties?.sessionID;
         if (!sessionID) return;
 
-        // Transient structured-output sessions must not re-trigger capture/learning
-        // (that self-schedules an unbounded idle → LLM → idle loop).
         if (await isInternalCaptureSession(ctx.client, sessionID)) {
           log("Skipping idle processing for internal capture session", { sessionID });
           return;
         }
 
-        // The internal-capture check above awaits: dispose may have run while it
-        // was in flight. Never arm post-dispose timers.
         if (cleanedUp) return;
 
-        // Same-session idles debounce into one capture; different sessions
-        // each keep their own pending timer (see idleTimers comment above).
         const existingTimer = idleTimers.get(sessionID);
         if (existingTimer) clearTimeout(existingTimer);
 
@@ -1404,17 +1315,9 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
               signal: pluginLifetime.signal,
             });
 
-            // Prompts are shared across projects, but web-server ownership tracks
-            // whoever bound the port first and is never handed over while that
-            // process stays reachable. Gating learning on it stalls the queue
-            // whenever the owner stops seeing sessions, and disables learning
-            // outright when the web server is off. Any active instance may learn;
-            // performUserProfileLearning holds a cross-process lock internally.
             if (cleanedUp) return;
             await performUserProfileLearning(ctx, directory);
 
-            // Retention cleanup stays owner-only: it is storage-wide maintenance
-            // that has no reason to run once per active instance.
             if (webServer?.isServerOwner()) {
               const { cleanupService } = await import("./services/cleanup-service.js");
               if (await cleanupService.shouldRunCleanup()) await cleanupService.runCleanup();
@@ -1425,14 +1328,10 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
           } catch (error) {
             log("Idle processing error", { error: String(error) });
           } finally {
-            // Only drop the entry if it is still ours: a newer idle for this
-            // session may have re-armed a fresh timer while we ran.
             if (idleTimers.get(sessionID) === timer) idleTimers.delete(sessionID);
           }
         }, 10000);
         idleTimers.set(sessionID, timer);
-        // Dispose may have cleared the map between the cleanedUp check above
-        // and this set; never leave an orphan timer armed after cleanup.
         if (cleanedUp) {
           clearTimeout(timer);
           idleTimers.delete(sessionID);

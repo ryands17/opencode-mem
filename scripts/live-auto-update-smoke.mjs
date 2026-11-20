@@ -1,7 +1,3 @@
-/**
- * Live smoke for auto-update helpers + checkAutoUpdate paths.
- * Run: bun scripts/live-auto-update-smoke.mjs
- */
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

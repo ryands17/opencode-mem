@@ -29,8 +29,6 @@ export function groupMemories(items: MemoryItem[]): MemoryGroup[] {
     paired.set(prompt.id, group);
   }
 
-  // Capture updates can leave older prompts pointing at the same memory.
-  // Prefer the memory's current prompt before considering those backlinks.
   for (const item of map.values()) {
     if (item.type === "memory" && item.linkedPromptId) {
       pair(item, map.get(item.linkedPromptId));
@@ -42,7 +40,6 @@ export function groupMemories(items: MemoryItem[]): MemoryGroup[] {
     }
   }
 
-  // Emit each item once, retaining first-appearance order for equal dates.
   for (const item of map.values()) {
     if (processed.has(item.id)) continue;
     const group = paired.get(item.id);

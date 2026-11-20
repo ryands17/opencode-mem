@@ -61,9 +61,7 @@ export class MarkdownVaultWatcher {
     if (this.watcher) {
       try {
         this.watcher.close();
-      } catch {
-        /* ignore */
-      }
+      } catch {}
       this.watcher = null;
     }
     this.running = false;
@@ -87,7 +85,6 @@ export class MarkdownVaultWatcher {
     if (this.pendingSelfWrites.has(normalized)) return;
 
     try {
-      // Normalize via vault helpers when possible.
       const abs = resolve(this.vaultRoot, normalized);
       const rel = vaultRelFromAbs(this.vaultRoot, abs);
       if (this.pendingSelfWrites.has(rel)) return;
@@ -99,7 +96,6 @@ export class MarkdownVaultWatcher {
   }
 
   private looksLikeDeleteOfMarkdown(path: string): boolean {
-    // Some platforms omit extension on rename/delete events; still queue a rescan.
     return path.length > 0 && !path.includes(".");
   }
 

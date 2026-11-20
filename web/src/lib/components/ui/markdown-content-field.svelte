@@ -13,7 +13,6 @@
     rows?: number;
     required?: boolean;
     placeholder?: string;
-    /** Reset to edit mode when this becomes true (e.g. dialog open). */
     resetKey?: boolean;
   };
 

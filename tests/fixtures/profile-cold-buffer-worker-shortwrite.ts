@@ -1,19 +1,6 @@
-/**
- * Child-process worker for short-write simulation in the cold-buffer tests.
- * Pair with profile-cold-buffer-worker-preload.ts via `bun --preload`.
- *
- * The preload patch only limits how many bytes a single low-level
- * fs.writeSync call forwards — the production saveColdBuffers() path, the
- * real tmp+rename flow and the real fd bookkeeping all stay live.
- *
- * Args: dir profileId description preExisting(""=none)
- * Env/argv: SWMODE=short-ascii|short-utf8|zero|half (read by the preload)
- * Prints one JSON line: { ok, error, targetBytes, tmpLeft }
- */
 import * as fs from "node:fs";
 import { join } from "node:path";
 
-// Drop non-positional flags (SWMODE=... is consumed by the preload).
 const args = process.argv.slice(2).filter((a) => !a.startsWith("SWMODE="));
 const dir = args[0]!;
 const profileId = args[1]!;
@@ -24,9 +11,7 @@ const coldBufferPath = join(dir, "cold-buffer.json");
 if (preExisting === "") {
   try {
     fs.unlinkSync(coldBufferPath);
-  } catch {
-    // no file yet
-  }
+  } catch {}
 } else {
   fs.writeFileSync(coldBufferPath, preExisting, "utf-8");
 }

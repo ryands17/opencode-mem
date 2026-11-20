@@ -1,4 +1,4 @@
-import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,17 +16,33 @@ afterAll(() => {
   for (const dir of tempDirs) {
     try {
       rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // Best-effort cleanup.
-    }
+    } catch {}
   }
 });
 
-afterEach(async () => {
+// WARNING: keep this schema identical to the lock code's — a bare name-only CREATE TABLE here poisons a fresh coordination DB.
+const LOCK_TABLE = `CREATE TABLE IF NOT EXISTS profile_learning_lock (
+      name TEXT PRIMARY KEY,
+      owner_token TEXT NOT NULL,
+      pid INTEGER NOT NULL,
+      boot_id TEXT,
+      starttime TEXT,
+      acquired_at INTEGER NOT NULL
+    )`;
+
+async function resetLockTable(): Promise<void> {
   await withDb("", async (db) => {
-    await db.run(`CREATE TABLE IF NOT EXISTS profile_learning_lock (name TEXT PRIMARY KEY)`);
+    await db.run(LOCK_TABLE);
     await db.run(`DELETE FROM profile_learning_lock`);
   });
+}
+
+beforeAll(async () => {
+  await resetLockTable();
+});
+
+afterEach(async () => {
+  await resetLockTable();
 });
 
 const WORKER = join(import.meta.dir, "fixtures", "profile-learning-lock-worker.mts");
@@ -113,7 +129,6 @@ async function runProbe(dir: string): Promise<WorkerResult> {
   return worker.result;
 }
 
-/** Opens the coordination DB directly (fixture setup / assertions). */
 async function withDb<T>(_dir: string, fn: (db: TursoDb) => Promise<T>): Promise<T> {
   const db = new TursoDb(
     createClient({
@@ -177,12 +192,6 @@ function readStarttime(pid: number): string {
   return starttime;
 }
 
-/**
- * A VALID current-platform starttime that is simply not this process's:
- * numeric ticks on Linux ("1" — a real field-22 value no modern process
- * has), or a real calendar date behind the darwin prefix on Darwin. Kind is
- * always the local one so the same-kind mismatch path is exercised.
- */
 function localKindMismatchStarttime(): string {
   if (LOCAL_START_TIME?.startsWith("darwin:")) {
     return "darwin:Sun Nov 16 10:11:12 2025";
@@ -190,12 +199,6 @@ function localKindMismatchStarttime(): string {
   return "1";
 }
 
-/**
- * A VALID current-platform starttime for a dead-pid row: same kind as the
- * host's, well-formed, but guaranteed to differ from anything the host
- * could read for a live process (used with pid 4194304, which is above
- * every default pid_max and therefore never alive).
- */
 function localKindDeadPidStarttime(): string {
   if (LOCAL_START_TIME?.startsWith("darwin:")) {
     return "darwin:Sun Nov 16 10:11:12 2025";
@@ -217,11 +220,9 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
     const dir = storage();
 
     const winner = spawnWorker(dir, "hold");
-    // Only attempt once the winner has confirmed it is holding.
     await waitBarrier(dir, "acquired");
 
     const loser = spawnWorker(dir, "try");
-    // The loser's attempt fully completes (process exits) before release.
     const loserResult = await loser.result;
     expect(loserResult.exitCode).toBe(0);
     expect(loserResult.parsed).toEqual({ acquired: false });
@@ -229,26 +230,21 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
     writeFileSync(barrierPath(dir, "release"), "ready");
     const winnerResult = await winner.result;
     expect(winnerResult.exitCode).toBe(0);
-    // held before release, not held after — and heldBefore is the winner's
-    // own row, not a leftover from a previous owner.
     expect(winnerResult.parsed).toEqual({ acquired: true, heldBefore: true, heldAfter: false });
 
-    // The freed lock is acquirable again.
     const again = await runProbe(dir);
     expect(again.parsed).toEqual({ acquired: true });
-  }, 45_000);
+  });
 
   it("release is idempotent", async () => {
     const dir = storage();
     const result = await spawnWorker(dir, "release-twice").result;
     expect(result.exitCode).toBe(0);
     expect(result.parsed).toEqual({ acquired: true, heldAfter: false });
-  }, 30_000);
+  });
 
   it("never steals a live lock, even held past 30 minutes", async () => {
     const dir = storage();
-    // This test process is alive and its identity is fully verifiable, so
-    // the lock is live under any reading. The age must play no role.
     await plantOwner(dir, {
       pid: process.pid,
       bootId: HAS_BOOT_IDENTITY ? readBootId() : null,
@@ -259,32 +255,24 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
     const result = await runProbe(dir);
     expect(result.exitCode).toBe(0);
     expect(result.parsed).toEqual({ acquired: false });
-    // The live owner's row is untouched.
     expect(await currentOwnerToken(dir)).toBe("planted-owner-token");
-  }, 30_000);
+  });
 
   it.skipIf(process.platform === "win32")(
     "never steals a lock owned by a process we cannot signal (EPERM)",
     async () => {
       const dir = storage();
-      // PID 1 is alive and owned by root; kill(1, 0) yields EPERM for a
-      // non-root caller. No startup identity is recorded, so the
-      // implementation must fall back to the signal probe and treat EPERM
-      // as "alive, not reclaimable". Windows has no equivalent protected
-      // PID 1 semantics (PID 1 is typically ESRCH), so this probe is Unix-only.
       await plantOwner(dir, { pid: 1, starttime: null, acquiredAt: Date.now() });
 
       const result = await runProbe(dir);
       expect(result.exitCode).toBe(0);
       expect(result.parsed).toEqual({ acquired: false });
       expect(await currentOwnerToken(dir)).toBe("planted-owner-token");
-    },
-    30_000
+    }
   );
 
   it("exactly one of two competitors CAS-reclaims the same dead owner", async () => {
     const dir = storage();
-    // 2^22 exceeds every default Linux pid_max, so it can never be live.
     await plantOwner(dir, { pid: 4194304, acquiredAt: Date.now() });
 
     const a = spawnWorker(dir, "cas-race", "a");
@@ -293,9 +281,6 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
     await waitBarrier(dir, "ready.b");
     writeFileSync(barrierPath(dir, "go"), "ready");
 
-    // Both sides must have observed the SAME stale owner token before
-    // either CAS fires; PLL_CAS_HOOKS parks each UPDATE until go.update,
-    // making the shared-snapshot precondition deterministic.
     try {
       await waitBarrier(dir, "seen.a");
       await waitBarrier(dir, "seen.b");
@@ -321,23 +306,18 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
     const [ra, rb] = await Promise.all([a.result, b.result]);
     expect(ra.exitCode).toBe(0);
     expect(rb.exitCode).toBe(0);
-    // CAS on the same observed old owner_token: exactly one UPDATE wins.
     const acquired = [ra.parsed?.["acquired"], rb.parsed?.["acquired"]].filter(Boolean);
     expect(acquired).toHaveLength(1);
-    // The winner released on exit, so the lock is free again.
     expect(await currentOwnerToken(dir)).toBeNull();
-  }, 60_000);
+  });
 
   it("a stale release cannot drop a new owner's row, even with the same PID", async () => {
     const dir = storage();
     const result = await spawnWorker(dir, "stale-release").result;
     expect(result.exitCode).toBe(0);
-    // acquired:true means the old token was valid at release time, and
-    // stillHeld:true means the simulated new owner's row survived the old
-    // release (DELETE is conditional on the owner token).
     expect(result.parsed).toEqual({ acquired: true, stillHeld: true });
     expect(await currentOwnerToken(dir)).toBe("simulated-new-owner-token");
-  }, 30_000);
+  });
 
   it("recovers the lock after the holder is SIGKILLed without releasing", async () => {
     const dir = storage();
@@ -347,24 +327,15 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
     holder.kill("SIGKILL");
     await holder.exited;
 
-    // The killed process is provably gone (/proc/<pid> absent), so a new
-    // process must be able to take over.
     const result = await runProbe(dir);
     expect(result.exitCode).toBe(0);
     expect(result.parsed).toEqual({ acquired: true });
-  }, 45_000);
+  });
 
   it("reclaims a live PID only when the startup identity differs (PID reuse)", async () => {
-    // Requires a platform starttime identity (Linux /proc or Darwin ps).
     if (!HAS_START_IDENTITY) return;
 
     const dir = storage();
-    // This test process is alive, but the recorded starttime belongs to a
-    // previous inhabitant of this PID — reuse must be detected by identity,
-    // not by age (acquired_at is fresh). The planted value must be a VALID
-    // current-platform starttime (kind guard makes a foreign-format value a
-    // non-comparable no-steal row, which is covered separately; this case
-    // exercises the same-kind mismatch path).
     await plantOwner(dir, {
       pid: process.pid,
       bootId: HAS_BOOT_IDENTITY ? readBootId() : null,
@@ -376,10 +347,9 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
     expect(result.exitCode).toBe(0);
     expect(result.parsed).toEqual({ acquired: true });
     expect(await currentOwnerToken(dir)).toBeNull();
-  }, 30_000);
+  });
 
   it("reclaims an owner from a previous boot even though its PID is alive now", async () => {
-    // Requires a platform boot identity (Linux boot_id or Darwin kern.boottime).
     if (!HAS_BOOT_IDENTITY) return;
 
     const dir = storage();
@@ -393,31 +363,19 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
     const result = await runProbe(dir);
     expect(result.exitCode).toBe(0);
     expect(result.parsed).toEqual({ acquired: true });
-  }, 30_000);
+  });
 
   it("fails closed on malformed coordination state", async () => {
     const dir = storage();
-    // pid 0 can never identify a process; the record is structurally
-    // invalid and must be treated as untrustworthy, not as a free lock.
     await plantOwner(dir, { pid: 0, acquiredAt: Date.now() });
 
     const result = await runProbe(dir);
     expect(result.exitCode).toBe(0);
     expect(result.parsed).toEqual({ acquired: false });
     expect(await currentOwnerToken(dir)).toBe("planted-owner-token");
-  }, 30_000);
+  });
 
   it("proc ENOENT alone never kills; only the kill probe decides", async () => {
-    // Owner pid 4194304 → /proc/<pid>/stat absent in every environment.
-    // A non-null CURRENT-PLATFORM-KIND starttime makes the checker take the
-    // proc-stat branch and hit the absent → kill-probe fallthrough for real
-    // (a null starttime would take the direct signal-probe path instead,
-    // and a foreign-kind value would correctly no-steal via the kind guard
-    // — neither exercises this path).
-    // PLL_LABEL injects the exact kill(0) outcome in-process:
-    //   EPERM (hidepid=2 live holder) → false
-    //   OK    (live)                   → false
-    //   ESRCH (dead)                   → true (reclaimed)
     const outcomes: Record<string, boolean> = {};
     for (const forced of ["EPERM", "OK", "ESRCH"] as const) {
       const caseDir = storage();
@@ -433,10 +391,9 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
       outcomes[forced] = Boolean(result.parsed?.["acquired"]);
     }
     expect(outcomes).toEqual({ EPERM: false, OK: false, ESRCH: true });
-  }, 60_000);
+  });
 
   it("boot_id variants: malformed fails closed; valid-null and same-as-host stay live", async () => {
-    // Worker reads the local boot/starttime identity; skip where unavailable.
     if (!HAS_BOOT_IDENTITY || !HAS_START_IDENTITY) return;
 
     const dir = storage();
@@ -449,22 +406,15 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
       object: false,
       sameAsHost: false,
     });
-  }, 60_000);
+  });
 
   it("stored starttime identity: strict format, cross-kind never kills, only same-kind mismatch reclaims", async () => {
-    // Worker plants each owner row variant and attempts one acquire.
-    // The key cases here are upstream regressions Oracle flagged in Gate 1:
-    // a Linux host must not CAS-steal a live owner merely because its stored
-    // starttime carries the darwin: prefix and therefore "differs" from the
-    // host's numeric /proc starttime; malformed prefixed values (bare
-    // `darwin:`, `darwin:garbage`) must fail closed at parse time.
     const dir = storage();
     const result = await spawnWorker(dir, "starttime-variants").result;
     expect(result.exitCode).toBe(0);
     const variants = result.parsed?.["variants"] as Record<string, boolean>;
     const tokens = result.parsed?.["tokens"] as Record<string, string | null>;
 
-    // Format validation: fail closed, planted row untouched.
     for (const name of [
       "bare-darwin-prefix",
       "darwin-garbage-suffix",
@@ -478,41 +428,23 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
       expect(tokens[name]).toBe(`planted-${name}`);
     }
 
-    // Platform-identity-gated cases (only present when host provides one).
     if ("live-owner-real-starttime" in variants) {
-      // The Gate 1 regression: a live holder with a valid foreign-platform
-      // starttime must never be CAS-stolen via a bogus "PID reuse" mismatch.
       expect(variants["foreign-kind-live-owner"]).toBe(false);
       expect(tokens["foreign-kind-live-owner"]).toBe("planted-foreign-kind-live-owner");
-      // Incomparable identity on a dead PID still never asserts death by
-      // itself (the lock simply is not reclaimed through this row).
       expect(variants["foreign-kind-dead-pid"]).toBe(false);
       expect(tokens["foreign-kind-dead-pid"]).toBe("planted-foreign-kind-dead-pid");
-      // Control: same-kind identity on a genuinely dead PID must still
-      // recover the lock (fix must not over-block legitimate recovery).
       expect(variants["local-kind-dead-pid-steal"]).toBe(true);
-      // Live owner with its exact own starttime: never reclaimed.
       expect(variants["live-owner-real-starttime"]).toBe(false);
       expect(tokens["live-owner-real-starttime"]).toBe("planted-live-owner-real-starttime");
-      // Null starttime on a live owner: signal-probe fallback decides alive.
       expect(variants["live-owner-null-starttime"]).toBe(false);
       expect(tokens["live-owner-null-starttime"]).toBe("planted-live-owner-null-starttime");
-      // Valid local-kind starttime of a previous PID inhabitant: reclaim.
       expect(variants["same-kind-mismatch-steal"]).toBe(true);
     }
-  }, 180_000);
+  });
 
   it.skipIf(process.platform === "win32")(
     "same-kind Darwin starttime: impossible dates fail closed, real dates stay usable (simulated darwin host)",
     async () => {
-      // Runs on Linux/macOS hosts: the child fixture forces process.platform=
-      // "darwin" and mocks ONLY the ps/sysctl boundary (real Turso driver
-      // imported before the flip; SQL/CAS run against a real temp coordination
-      // DB). The mocked ps answers one controlled valid lstart
-      // ("Sat Oct  3 09:00:00 2026") — real calendar date — for every pid, so
-      // self identity is same-kind and deterministic. Nothing here can pass via
-      // the Linux foreign-kind guard. Skipped on Windows: Bun cannot reliably
-      // force a Darwin identity stack there (platform/ps boundary).
       const dir = storage();
       const worker = spawnWorker(dir, "darwin-sim", "self-lstart", {
         PLL_STARTTIME: "Sat Oct  3 09:00:00 2026",
@@ -524,18 +456,14 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
       const variants = result.parsed?.["variants"] as Record<string, boolean>;
       const tokens = result.parsed?.["tokens"] as Record<string, string | null>;
 
-      // Impossible calendar values behind a structurally matching prefix:
-      // every one parses under the attempt-1 regex ((\d{1,2}) admits 00/99,
-      // no month-length/leap/weekday logic) and would CAS-steal the live row.
       for (const name of [
         "day-99",
         "day-00",
-        "feb29-nonleap", // 2026-02-29 rolls to Mar 1 (a Sunday!) — only the
-        // day-rollover check catches this one, not the weekday check
+        "feb29-nonleap",
         "apr31",
         "mar32-rolls",
-        "weekday-mismatch", // real date Oct 2 2026, wrong weekday (Fri)
-        "leap-dow-mismatch", // real leap date Feb 29 2028, wrong weekday (Tue)
+        "weekday-mismatch",
+        "leap-dow-mismatch",
         "empty",
         "garbage",
       ]) {
@@ -543,25 +471,16 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
         expect(tokens[name]).toBe(`planted-${name}`);
       }
 
-      // Real dates must remain readable identities:
-      //  - the live owner's exact lstart is never stolen;
-      //  - leap Feb 29 2028 with its correct weekday is a valid different
-      //    identity → simulated PID-reuse reclaim;
-      //  - any other real date likewise reclaims.
       expect(variants["exact-self"]).toBe(false);
       expect(tokens["exact-self"]).toBe("planted-exact-self");
       expect(variants["valid-leap-feb29-steal"]).toBe(true);
       expect(variants["valid-different-date-steal"]).toBe(true);
-    },
-    120_000
+    }
   );
 
   it.skipIf(process.platform === "win32")(
     "live Darwin ps garbage against a valid stored identity must not steal (simulated)",
     async () => {
-      // Self identity is a valid lstart; the foreign owner's live `ps` returns
-      // malformed text. Without live-read validation, inequality would CAS-steal.
-      // Same Windows skip as the companion darwin-sim calendar suite above.
       const dir = storage();
       const worker = spawnWorker(dir, "darwin-sim", "live-garbage", {
         PLL_STARTTIME: "Sat Oct  3 09:00:00 2026",
@@ -571,28 +490,24 @@ describe("cross-process profile learning lock (SQL coordination DB)", () => {
       expect(result.parsed?.["ownStarttime"]).toBe("darwin:Sat Oct  3 09:00:00 2026");
       expect(result.parsed?.["stolen"]).toBe(false);
       expect(result.parsed?.["token"]).toBe("planted-live-ps-garbage");
-    },
-    60_000
+    }
   );
 
   it("an untrusted local boot_id never acts as a dead signal", async () => {
-    // Worker forces the local boot identity reader to return garbage.
     if (!HAS_BOOT_IDENTITY) return;
 
     const dir = storage();
     const result = await spawnWorker(dir, "current-boot-invalid").result;
     expect(result.exitCode).toBe(0);
     expect(result.parsed).toEqual({ acquired: false });
-  }, 30_000);
+  });
 
   it("fails closed when the coordination database cannot be opened", async () => {
     const dir = storage();
-    // Point the worker at a closed port so every statement fails; acquisition
-    // must degrade to null (skip this round), not throw.
     const result = await spawnWorker(dir, "probe", "x", {
       PLL_SQLD_URL: "http://127.0.0.1:1",
     }).result;
     expect(result.exitCode).toBe(0);
     expect(result.parsed).toEqual({ acquired: false });
-  }, 30_000);
+  });
 });

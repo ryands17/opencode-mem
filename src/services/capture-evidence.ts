@@ -16,7 +16,6 @@ interface Binding {
 export class CaptureEvidenceRecorder {
   private delivered = new Map<string, string>();
   private bindings = new Map<string, Binding>();
-  /** After idle/deleted, refuse new binds until the next authored user input. */
   private sealed = new Set<string>();
   private chain: Promise<void> = Promise.resolve();
 
@@ -25,8 +24,6 @@ export class CaptureEvidenceRecorder {
   observe(event: { type: string; properties?: any }): Promise<void> {
     if (!isCaptureEvidenceEvent(event.type)) return Promise.resolve();
     const next = this.chain.then(() => this.record(event));
-    // Never reject to callers: deleted-session capture must still run after a
-    // best-effort checkpoint even if one evidence write fails.
     this.chain = next.catch(() => {});
     return this.chain;
   }
@@ -70,9 +67,6 @@ export class CaptureEvidenceRecorder {
     if (binding.textFull || typeof text !== "string") return;
     const parts = new Map(binding.texts);
     parts.set(key, text);
-    // Keep a bounded raw in-memory prefix solely to redact tags spanning final
-    // text parts. No raw buffer is persisted. Stop, rather than retain a tail
-    // that could lose an opening <private> marker.
     if (parts.size > 32 || utf8ByteLength([...parts.values()].join("\n")) > MAX_TEXT_BYTES) {
       binding.textFull = true;
       binding.texts.clear();
@@ -103,7 +97,6 @@ export class CaptureEvidenceRecorder {
     status: string,
     text: string
   ): Promise<void> {
-    // No tool inputs: results are evidence, arguments alone are not success.
     await userPromptManager.saveCaptureEvidence(
       binding.promptId,
       this.directory,
@@ -123,16 +116,13 @@ export class CaptureEvidenceRecorder {
       (event.type === "session.deleted" ? data.info?.id : undefined);
     if (typeof sessionID !== "string") return;
     if (event.type === "session.inbox.delivered") {
-      // A new authored input opens the next turn after an idle/deleted seal.
       this.sealed.delete(sessionID);
-      // Always replace/clear, even for synthetic or private/untracked inputs.
       this.delivered.delete(sessionID);
       if (typeof data.inboxID === "string") this.delivered.set(sessionID, data.inboxID);
       this.trim(this.delivered);
       return;
     }
     if (event.type === "message.updated" && data.info?.role === "user") {
-      // V1 has no inbox.delivered; a new user message unseals the next turn.
       this.sealed.delete(sessionID);
       return;
     }
@@ -161,7 +151,6 @@ export class CaptureEvidenceRecorder {
       this.delivered.delete(sessionID);
       for (const key of this.bindings.keys())
         if (key.startsWith(`${sessionID}:`)) this.bindings.delete(key);
-      // Seal so buffered late parts cannot rebind and flip ready back to 0.
       this.sealed.add(sessionID);
       return;
     }
@@ -169,7 +158,7 @@ export class CaptureEvidenceRecorder {
     const assistantID = data.assistantMessageID ?? part?.messageID;
     if (typeof assistantID !== "string") return;
     const binding = this.bindings.get(`${sessionID}:${assistantID}`);
-    if (!binding) return; // Never guess the latest prompt after a missed event.
+    if (!binding) return;
     if (event.type === "session.text.ended") {
       await this.text(binding, assistantID, String(data.ordinal), data.text);
     } else if (event.type === "session.tool.input.started") {
@@ -185,7 +174,6 @@ export class CaptureEvidenceRecorder {
             .map((p: any) => p.text)
             .join("\n")
         : "";
-      // The terminal state is useful even if the host exposes no text result.
       await this.tool(
         binding,
         assistantID,

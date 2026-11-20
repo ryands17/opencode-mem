@@ -14,7 +14,6 @@ export function buildAutoCaptureConfigReminderMessage(issues: string[]): string 
 /** Minimal toast client shape; accepts OpenCode's OpencodeClient.tui. */
 type AutoCaptureStatusToastClient = {
   tui?: {
-    // OpenCode's SDK typing for showToast is version-dependent; keep loose.
     showToast?: (input: any) => Promise<unknown>;
   };
 };

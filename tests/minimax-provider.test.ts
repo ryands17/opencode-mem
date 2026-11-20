@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { MiniMaxProvider } from "../src/services/ai/providers/minimax.js";
 import { AIProviderFactory } from "../src/services/ai/ai-provider-factory.js";
 import type { ChatCompletionTool } from "../src/services/ai/tools/tool-schema.js";
@@ -65,13 +65,34 @@ function makeProvider(
   };
 }
 
-describe("MiniMaxProvider", () => {
-  const originalFetch = globalThis.fetch;
+type RecordedRequest = {
+  url: string;
+  path: string;
+  method: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+};
 
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
+function makeServer(respond: () => Response | Promise<Response>) {
+  const requests: RecordedRequest[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = JSON.parse((await req.text()) || "{}") as Record<string, unknown>;
+      requests.push({
+        url: req.url,
+        path: new URL(req.url).pathname,
+        method: req.method,
+        headers: Object.fromEntries(req.headers.entries()),
+        body,
+      });
+      return respond();
+    },
   });
+  return { server, requests, url: String(server.url) };
+}
 
+describe("MiniMaxProvider", () => {
   it("reports the minimax provider name", () => {
     const { provider } = makeProvider();
     expect(provider.getProviderName()).toBe("minimax");
@@ -121,68 +142,53 @@ describe("MiniMaxProvider", () => {
   });
 
   it("records the minimax session provider tag", async () => {
-    globalThis.fetch = (async () =>
-      ({
-        ok: false,
-        status: 401,
-        statusText: "Unauthorized",
-        text: async () => "login fail",
-      }) as Response) as typeof fetch;
+    const { server, url } = makeServer(() => new Response("login fail", { status: 401 }));
+    try {
+      const { provider, sessionManager } = makeProvider({ apiUrl: url });
+      await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    const { provider, sessionManager } = makeProvider();
-    await provider.executeToolCall("system", "user", toolSchema, "session-id");
-
-    expect(sessionManager.lastCreateSessionArgs?.provider).toBe("minimax");
+      expect(sessionManager.lastCreateSessionArgs?.provider).toBe("minimax");
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("targets /anthropic/v1/messages and authenticates with x-api-key", async () => {
-    let capturedUrl: string | undefined;
-    let capturedHeaders: Record<string, string> | undefined;
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      capturedUrl = String(input);
-      capturedHeaders = init?.headers as Record<string, string>;
-      return {
-        ok: false,
-        status: 401,
-        statusText: "Unauthorized",
-        text: async () => "login fail",
-      } as Response;
-    }) as typeof fetch;
+    const { server, url, requests } = makeServer(() => new Response("login fail", { status: 401 }));
+    try {
+      const { provider } = makeProvider({ apiUrl: url });
+      await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    const { provider } = makeProvider();
-    await provider.executeToolCall("system", "user", toolSchema, "session-id");
-
-    expect(capturedUrl).toBe("https://api.minimax.io/anthropic/v1/messages");
-    expect(capturedHeaders?.["x-api-key"]).toBe("test-key");
-    expect(capturedHeaders?.["anthropic-version"]).toBe("2023-06-01");
+      expect(requests[0]?.path).toBe("/anthropic/v1/messages");
+      expect(requests[0]?.headers["x-api-key"]).toBe("test-key");
+      expect(requests[0]?.headers["anthropic-version"]).toBe("2023-06-01");
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("forwards adaptive thinking via memoryExtraParams", async () => {
-    let capturedBody: Record<string, unknown> | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      capturedBody = JSON.parse(String(init?.body ?? "{}"));
-      return {
-        ok: false,
-        status: 401,
-        statusText: "Unauthorized",
-        text: async () => "login fail",
-      } as Response;
-    }) as typeof fetch;
+    const { server, url, requests } = makeServer(() => new Response("login fail", { status: 401 }));
+    try {
+      const { provider } = makeProvider({
+        apiUrl: url,
+        extraParams: {
+          thinking: { type: "adaptive" },
+          model: "should-not-overwrite",
+          messages: ["should-not-overwrite"],
+          tools: ["should-not-overwrite"],
+        },
+      });
+      await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    const { provider } = makeProvider({
-      extraParams: {
-        thinking: { type: "adaptive" },
-        model: "should-not-overwrite",
-        messages: ["should-not-overwrite"],
-        tools: ["should-not-overwrite"],
-      },
-    });
-    await provider.executeToolCall("system", "user", toolSchema, "session-id");
-
-    expect(capturedBody?.thinking).toEqual({ type: "adaptive" });
-    expect(capturedBody?.model).toBe("MiniMax-M3");
-    expect(Array.isArray(capturedBody?.messages)).toBe(true);
-    expect(Array.isArray(capturedBody?.tools)).toBe(true);
+      const capturedBody = requests[0]?.body;
+      expect(capturedBody?.thinking).toEqual({ type: "adaptive" });
+      expect(capturedBody?.model).toBe("MiniMax-M3");
+      expect(Array.isArray(capturedBody?.messages)).toBe(true);
+      expect(Array.isArray(capturedBody?.tools)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("keeps the recommended Flash model aligned in config templates", () => {
@@ -194,27 +200,15 @@ describe("MiniMaxProvider", () => {
     expect(example.match(modelPattern)?.[1]).toBe(memoryModel);
   });
 
-  for (const apiUrl of [
-    "https://api.minimax.io",
-    "https://api.minimax.cn",
-    "https://api.minimaxi.com",
-  ]) {
+  for (const [label, baseFactory] of [
+    ["host root", (url: string) => url],
+    ["host with /anthropic", (url: string) => `${url}anthropic`],
+    ["host with /anthropic/v1/messages", (url: string) => `${url}anthropic/v1/messages`],
+  ] as const) {
     for (const effort of [undefined, "low", "medium", "high", "xhigh", "max"]) {
-      it(`sends the recommended Flash configuration to ${apiUrl} with effort ${effort ?? "default"}`, async () => {
-        const config = buildMemoryProviderConfig({
-          memoryProvider: "minimax",
-          memoryModel: "MiniMax-M3.1-Flash",
-          memoryApiUrl: apiUrl,
-          memoryApiKey: "fixture-only-key",
-          memoryExtraParams: effort ? { output_config: { effort } } : undefined,
-        });
-        const provider = new MiniMaxProvider(config, new FakeSessionManager() as any);
-        let body: any;
-        let url: string | undefined;
-        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-          url = String(input);
-          body = JSON.parse(String(init?.body));
-          return Response.json({
+      it(`sends the recommended Flash configuration to ${label} with effort ${effort ?? "default"}`, async () => {
+        const { server, url, requests } = makeServer(() =>
+          Response.json({
             content: [
               {
                 type: "tool_use",
@@ -224,52 +218,74 @@ describe("MiniMaxProvider", () => {
               },
             ],
             stop_reason: "tool_use",
+          })
+        );
+        try {
+          const config = buildMemoryProviderConfig({
+            memoryProvider: "minimax",
+            memoryModel: "MiniMax-M3.1-Flash",
+            memoryApiUrl: baseFactory(url),
+            memoryApiKey: "fixture-only-key",
+            memoryExtraParams: effort ? { output_config: { effort } } : undefined,
           });
-        }) as typeof fetch;
-        const result = await provider.executeToolCall("system", "user", toolSchema, "session-id");
-        expect(result.success).toBe(true);
-        expect(url).toBe(`${apiUrl}/anthropic/v1/messages`);
-        expect(body.model).toBe("MiniMax-M3.1-Flash");
-        expect(body.output_config).toEqual(effort ? { effort } : undefined);
-        expect(body.thinking).toBeUndefined();
-        expect(body.service_tier).toBeUndefined();
-        expect(body.tools[0].name).toBe("save_memories");
+          const provider = new MiniMaxProvider(config, new FakeSessionManager() as any);
+          const result = await provider.executeToolCall("system", "user", toolSchema, "session-id");
+          expect(result.success).toBe(true);
+          expect(requests[0]?.path).toBe("/anthropic/v1/messages");
+          const body = requests[0]?.body as any;
+          expect(body.model).toBe("MiniMax-M3.1-Flash");
+          expect(body.output_config).toEqual(effort ? { effort } : undefined);
+          expect(body.thinking).toBeUndefined();
+          expect(body.service_tier).toBeUndefined();
+          expect(body.tools[0].name).toBe("save_memories");
+        } finally {
+          server.stop(true);
+        }
       });
     }
   }
 
   for (const model of ["MiniMax-M3", "MiniMax-M2.7", "custom-model"]) {
     it(`preserves the explicitly configured model ${model}`, async () => {
-      let body: any;
-      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-        body = JSON.parse(String(init?.body));
-        return Response.json({ content: [], stop_reason: "max_tokens" });
-      }) as typeof fetch;
-      const config = buildMemoryProviderConfig({
-        memoryProvider: "minimax",
-        memoryModel: model,
-        memoryApiUrl: "https://custom.invalid",
-        memoryApiKey: "fixture-only-key",
-      });
-      const provider = new MiniMaxProvider(config, new FakeSessionManager() as any);
-      await provider.executeToolCall("system", "user", toolSchema, "session-id");
-      expect(body.model).toBe(model);
-      expect(body.thinking).toBeUndefined();
-      expect(body.output_config).toBeUndefined();
+      const { server, url, requests } = makeServer(() =>
+        Response.json({ content: [], stop_reason: "max_tokens" })
+      );
+      try {
+        const config = buildMemoryProviderConfig({
+          memoryProvider: "minimax",
+          memoryModel: model,
+          memoryApiUrl: url,
+          memoryApiKey: "fixture-only-key",
+        });
+        const provider = new MiniMaxProvider(config, new FakeSessionManager() as any);
+        await provider.executeToolCall("system", "user", toolSchema, "session-id");
+        const body = requests[0]?.body as any;
+        expect(body.model).toBe(model);
+        expect(body.thinking).toBeUndefined();
+        expect(body.output_config).toBeUndefined();
+      } finally {
+        server.stop(true);
+      }
     });
   }
 
   it("keeps explicit M3 disabled thinking unchanged", async () => {
-    let body: any;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      body = JSON.parse(String(init?.body));
-      return Response.json({ content: [], stop_reason: "max_tokens" });
-    }) as typeof fetch;
-    const { provider } = makeProvider({ extraParams: { thinking: { type: "disabled" } } });
-    await provider.executeToolCall("system", "user", toolSchema, "session-id");
-    expect(body.model).toBe("MiniMax-M3");
-    expect(body.thinking).toEqual({ type: "disabled" });
-    expect(body.output_config).toBeUndefined();
+    const { server, url, requests } = makeServer(() =>
+      Response.json({ content: [], stop_reason: "max_tokens" })
+    );
+    try {
+      const { provider } = makeProvider({
+        apiUrl: url,
+        extraParams: { thinking: { type: "disabled" } },
+      });
+      await provider.executeToolCall("system", "user", toolSchema, "session-id");
+      const body = requests[0]?.body as any;
+      expect(body.model).toBe("MiniMax-M3");
+      expect(body.thinking).toEqual({ type: "disabled" });
+      expect(body.output_config).toBeUndefined();
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("preserves complete Flash reasoning, tool results, and media history at the HTTP boundary", async () => {
@@ -296,58 +312,62 @@ describe("MiniMaxProvider", () => {
       { type: "thinking", thinking: "New reasoning", signature: "new-signature" },
       { type: "tool_use", id: "new-tool", name: "save_memories", input: { memory: "new fact" } },
     ];
-    const bodies: any[] = [];
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)));
-      return Response.json({ content: responseContent, stop_reason: "tool_use" });
-    }) as typeof fetch;
-    const { provider } = makeProvider({ model: "MiniMax-M3.1-Flash" }, sessionManager);
-    expect(
-      (await provider.executeToolCall("system", "user", toolSchema, "session-id")).success
-    ).toBe(true);
-    expect(sessionManager.getMessages().at(-1).contentBlocks).toEqual(responseContent);
-    await provider.executeToolCall("system", "next user", toolSchema, "session-id");
-    expect(bodies[0].messages.slice(0, 3)).toEqual([
-      { role: "user", content: media },
-      { role: "assistant", content: assistant },
-      { role: "user", content: toolResult },
-    ]);
-    expect(bodies[1].messages).toContainEqual({ role: "assistant", content: responseContent });
+    const { server, url, requests } = makeServer(() =>
+      Response.json({ content: responseContent, stop_reason: "tool_use" })
+    );
+    try {
+      const { provider } = makeProvider(
+        { model: "MiniMax-M3.1-Flash", apiUrl: url },
+        sessionManager
+      );
+      expect(
+        (await provider.executeToolCall("system", "user", toolSchema, "session-id")).success
+      ).toBe(true);
+      expect(sessionManager.getMessages().at(-1).contentBlocks).toEqual(responseContent);
+      await provider.executeToolCall("system", "next user", toolSchema, "session-id");
+      const bodies = requests.map((request) => request.body as any);
+      expect(bodies[0].messages.slice(0, 3)).toEqual([
+        { role: "user", content: media },
+        { role: "assistant", content: assistant },
+        { role: "user", content: toolResult },
+      ]);
+      expect(bodies[1].messages).toContainEqual({ role: "assistant", content: responseContent });
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("extracts tool input from a MiniMax Anthropic-format response", async () => {
-    let capturedBody: Record<string, unknown> | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      capturedBody = JSON.parse(String(init?.body ?? "{}"));
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          id: "msg_1",
-          type: "message",
-          role: "assistant",
-          model: "MiniMax-M3",
-          stop_reason: "tool_use",
-          content: [
-            {
-              type: "tool_use",
-              id: "tool_1",
-              name: "save_memories",
-              input: { memory: "captured fact" },
-            },
-          ],
-          usage: { input_tokens: 10, output_tokens: 5 },
-        }),
-      } as Response;
-    }) as typeof fetch;
+    const { server, url, requests } = makeServer(() =>
+      Response.json({
+        id: "msg_1",
+        type: "message",
+        role: "assistant",
+        model: "MiniMax-M3",
+        stop_reason: "tool_use",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool_1",
+            name: "save_memories",
+            input: { memory: "captured fact" },
+          },
+        ],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      })
+    );
+    try {
+      const { provider } = makeProvider({ apiUrl: url });
+      const result = await provider.executeToolCall("system", "user", toolSchema, "session-id");
 
-    const { provider } = makeProvider();
-    const result = await provider.executeToolCall("system", "user", toolSchema, "session-id");
-
-    expect(capturedBody?.model).toBe("MiniMax-M3");
-    expect(capturedBody?.max_tokens).toBeDefined();
-    expect(result.success).toBe(true);
-    expect((result.data as any).memory).toBe("captured fact");
+      const capturedBody = requests[0]?.body;
+      expect(capturedBody?.model).toBe("MiniMax-M3");
+      expect(capturedBody?.max_tokens).toBeDefined();
+      expect(result.success).toBe(true);
+      expect((result.data as any).memory).toBe("captured fact");
+    } finally {
+      server.stop(true);
+    }
   });
 });
 

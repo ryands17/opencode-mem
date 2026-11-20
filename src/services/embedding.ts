@@ -4,17 +4,8 @@ import { log, safeLog } from "./logger.js";
 const TIMEOUT_MS = 30000;
 const GLOBAL_EMBEDDING_KEY = Symbol.for("opencode-mem.embedding.instance");
 const MAX_CACHE_SIZE = 100;
-/**
- * Per-attempt ceiling for one remote embedding HTTP call. Kept at 8s so
- * 3 attempts + linear backoff stay under the outer embedWithTimeout budget
- * (TIMEOUT_MS = 30s). A single hung request costs one attempt instead of the
- * whole budget (#400: one transient hang previously aborted an entire import
- * with zero memories written).
- */
 const REMOTE_ATTEMPT_TIMEOUT_MS = 8000;
-/** Attempts per remote embedding call: 1 try + 2 retries on transient failures. */
 const REMOTE_MAX_ATTEMPTS = 3;
-/** Base backoff between remote embedding attempts; scales linearly (backoffMs * attempt). */
 const REMOTE_RETRY_BACKOFF_MS = 500;
 
 export type EmbeddingTask = "document" | "query";
@@ -128,12 +119,6 @@ export class EmbeddingHttpError extends Error {
   }
 }
 
-/**
- * Classify an embedding fetch failure as retryable. Only transient conditions
- * are retried: HTTP 429/5xx, per-attempt AbortSignal timeouts, and network
- * TypeErrors from fetch. JSON parse errors, other 4xx, and unexpected errors
- * fail fast so programming/shape bugs are not amplified across attempts.
- */
 function isRetryableEmbeddingError(error: unknown): boolean {
   if (error instanceof EmbeddingHttpError) {
     return error.status === 429 || error.status >= 500;
@@ -141,8 +126,6 @@ function isRetryableEmbeddingError(error: unknown): boolean {
   if (error instanceof DOMException) {
     return error.name === "TimeoutError" || error.name === "AbortError";
   }
-  // fetch network failures surface as TypeError; AbortSignal.timeout may too
-  // depending on runtime (Bun/Node) — accept TimeoutError/AbortError names.
   if (error instanceof Error) {
     if (error.name === "TimeoutError" || error.name === "AbortError") return true;
     if (error instanceof TypeError) return true;
@@ -228,7 +211,6 @@ export class EmbeddingService {
     this.isWarmedUp = false;
     this.initPromise = null;
     this.initError = null;
-    // Teardown path: a logger failure must not escape close().
     safeLog("Embedding service reset", { reason, model: CONFIG.embeddingModel });
   }
 
@@ -245,10 +227,6 @@ export class EmbeddingService {
       if (!CONFIG.embeddingApiUrl || !CONFIG.embeddingApiKey) {
         throw missingRemoteEmbeddingConfigError();
       }
-      // Send a probe request to verify the API endpoint is actually reachable.
-      // Uses a minimal embedding of "ping" to test the full request pipeline.
-      // Retried on transient failure (#400): a single hung probe previously
-      // burned the whole 30s budget and set the sticky initError.
       await fetchRemoteEmbeddingWithRetry(fetch, "ping");
       this.isWarmedUp = true;
       this.initError = null;

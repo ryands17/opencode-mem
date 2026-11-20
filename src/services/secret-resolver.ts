@@ -12,12 +12,10 @@ function expandPath(path: string): string {
   return path;
 }
 
-// Any group or other bit set means someone besides the owner can reach the
-// secret. Owner bits are deliberately excluded: 0600 and 0400 are both fine.
 const GROUP_AND_OTHER_BITS = 0o077;
 
-function checkFilePermissions(filePath: string): void {
-  if (platform() === "win32") {
+function checkFilePermissions(filePath: string, platformName: NodeJS.Platform = platform()): void {
+  if (platformName === "win32") {
     return;
   }
 
@@ -25,12 +23,6 @@ function checkFilePermissions(filePath: string): void {
     const stats = statSync(filePath);
     const mode = stats.mode & 0o777;
 
-    // Test the bits, not the numeric value. `mode > 0o600` compared a bitmask as
-    // an integer, so it missed every mode that grants group/other access while
-    // sorting numerically lower -- 0404 (world-readable) and 0006
-    // (world-writable) passed silently, while 0640, strictly less permissive
-    // than 0644, warned. The comparison and the property being checked were
-    // simply unrelated.
     const exposedBits = mode & GROUP_AND_OTHER_BITS;
 
     if (exposedBits !== 0) {
@@ -43,7 +35,10 @@ function checkFilePermissions(filePath: string): void {
   }
 }
 
-export function resolveSecretValue(value: string | undefined): string | undefined {
+export function resolveSecretValue(
+  value: string | undefined,
+  opts?: { platform?: NodeJS.Platform }
+): string | undefined {
   if (!value) {
     return undefined;
   }
@@ -56,7 +51,7 @@ export function resolveSecretValue(value: string | undefined): string | undefine
     }
 
     try {
-      checkFilePermissions(filePath);
+      checkFilePermissions(filePath, opts?.platform);
 
       const content = readFileSync(filePath, "utf-8");
       return content.trim();

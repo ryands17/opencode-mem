@@ -34,7 +34,7 @@ it("bounds repeated multi-megabyte recovery evidence", async () => {
   expect(Number(row!.payload)).toBeLessThanOrEqual(16384);
   await manager.markAsCaptured(id);
   expect(Number((await db.get("SELECT COUNT(*) n FROM pending_capture_evidence"))!.n)).toBe(0);
-}, 30000);
+});
 
 it("expires provider history and cascades message cleanup", async () => {
   CONFIG.storagePath = directory;
@@ -79,4 +79,4 @@ it("expires provider history and cascades message cleanup", async () => {
   await db.run("UPDATE ai_sessions SET expires_at = 1");
   expect(await sessions.cleanupExpiredSessions()).toBe(30);
   expect(Number((await db.get("SELECT COUNT(*) n FROM ai_messages"))!.n)).toBe(0);
-}, 30000);
+});

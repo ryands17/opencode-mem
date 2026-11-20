@@ -7,10 +7,6 @@ describe("published dependency constraints", () => {
   });
 
   it("ships no native-binding dependencies", () => {
-    // Native bindings (@tursodatabase/database, onnxruntime-node) do not ship
-    // for every platform (e.g. darwin/x64) and made the plugin uninstallable
-    // on Intel Macs. Storage goes through the pure-JS libSQL client against a
-    // remote sqld server; embeddings are remote-only.
     expect(pkg.dependencies).not.toHaveProperty("@tursodatabase/database");
     expect(pkg.dependencies).not.toHaveProperty("@huggingface/transformers");
     expect(pkg.dependencies).not.toHaveProperty("@xenova/transformers");

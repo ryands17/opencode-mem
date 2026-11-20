@@ -174,7 +174,6 @@ export async function applyUpdateOnCaptureDecision(
     return { success: true, id: targetId, action: "update" };
   }
 
-  // supersede
   const added = await client.addMemory(input.summary, input.containerTag, input.metadata as any);
   if (!added.success || !added.id) {
     return { success: false, action: "supersede", error: added.error || "add failed" };
@@ -186,7 +185,6 @@ export async function applyUpdateOnCaptureDecision(
       newId: added.id,
       error: deleted.error,
     });
-    // Keep store consistent: don't leave both old (active) and new (active).
     await client.deleteMemory(added.id, { supersededRollback: true });
     return {
       success: false,

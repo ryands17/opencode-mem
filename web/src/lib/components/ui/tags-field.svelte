@@ -7,7 +7,6 @@
 
   type Props = {
     value?: string[];
-    /** Existing tags offered when opening the + picker. */
     suggestions?: string[];
     placeholder?: string;
     addLabel?: string;

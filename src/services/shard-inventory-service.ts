@@ -243,7 +243,6 @@ export class ShardInventoryService {
           tursoShardManager.getShardPath("project", scopeHash, shardIndex);
         const fileExists = true;
         const content = await inspectShardContent(dbPath);
-        // Logical shards share one container tag; summing per shard double-counts.
         if (descriptors.length === 0) memoryCount = content.memoryCount;
 
         for (const candidate of content.pathCandidates) {
@@ -411,7 +410,6 @@ export class ShardInventoryService {
       };
     }
 
-    // If the old directory still exists, resolve its live project identity.
     if (existsSync(normalizedFrom)) {
       try {
         const live = getProjectTagInfo(normalizedFrom);
@@ -427,9 +425,7 @@ export class ShardInventoryService {
             },
           };
         }
-      } catch {
-        // Fall through to the generic missing-source error.
-      }
+      } catch {}
     }
 
     return {

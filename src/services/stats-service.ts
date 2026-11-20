@@ -110,7 +110,6 @@ export function classifyLogMessage(message: string): LogClassification {
     return { errorBucket: "Idle processing error" };
   }
 
-  // Match `listMemories: error`, `chat.message: ERROR`, etc.
   const errorSuffix = message.match(/^(.*):\s*error$/i);
   if (errorSuffix) {
     return { errorBucket: errorSuffix[1]!.trim() };
@@ -182,11 +181,6 @@ export interface CollectDailyStatsOptions {
   now?: Date;
 }
 
-/**
- * Mirrors the log file resolution in services/logger.ts without importing it:
- * the API-handler scenario tests mock logger.js with a minimal surface, so a
- * static import of any other export from that module breaks their import graph.
- */
 function defaultLogDir(): string {
   const logFile =
     process.env.OPENCODE_MEM_LOG_FILE || join(homedir(), ".opencode-mem", "opencode-mem.log");
@@ -273,10 +267,6 @@ export async function collectShardStats(shards: ShardInfo[]): Promise<ShardColle
       const db = await tursoConnectionManager.getConnection(shard.dbPath);
       const containerTag = `${CONFIG.containerTagPrefix}_${shard.scope}_${shard.scopeHash}`;
 
-      // Aggregate instead of `SELECT *` (getAllMemories): stats is polled every
-      // 30s by the web UI and must not drag vector blobs for every memory.
-      // Accumulators stay local until every query for this shard succeeds so a
-      // mid-walk failure cannot inflate global totals while memoryCount stays 0.
       let shardUserCount = 0;
       let shardProjectCount = 0;
       const shardTypeCount: Record<string, number> = {};

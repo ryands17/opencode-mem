@@ -106,12 +106,7 @@ export async function updateRemoveDir(packageDir: string, name: string) {
     : packageParent;
   if (basename(nodeModulesDir) !== "node_modules") return undefined;
 
-  // Only trust OpenCode wrapper basenames like `opencode-mem@latest`.
-  // Never fall back to package.json dependencies — that would delete a
-  // project root when the plugin lives under project/node_modules.
-  // OpenCode may nest installs under a timestamp dir:
-  //   ~/.cache/opencode/npm/opencode-mem@latest/<ts>/node_modules/opencode-mem
-  // Walk a few ancestors to find the `@latest` / range wrapper.
+  // WARNING: only resolve the wrapper by OpenCode basename specs (opencode-mem@latest); a package.json fallback can resolve to the user's project root, which updateRemoveDir then deletes.
   let dir = dirname(nodeModulesDir);
   for (let depth = 0; depth < 4; depth++) {
     const spec = wrapperSpec(dir, name);

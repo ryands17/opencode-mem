@@ -73,9 +73,7 @@ function rotateLog() {
     }
 
     cleanupOldLogs();
-  } catch {
-    // ignore log rotation failures
-  }
+  } catch {}
 }
 
 function getArchiveDate(stats: { mtime: Date }): string {
@@ -98,14 +96,11 @@ function cleanupOldLogs() {
         unlinkSync(join(logDir, file));
       }
     }
-  } catch {
-    // ignore stale-log cleanup failures
-  }
+  } catch {}
 }
 
 function ensureLoggerInitialized() {
   const logDir = getLogDirPath();
-  // Re-init when the log directory changes (tests sandbox HOME / USERPROFILE).
   if ((globalThis as any)[GLOBAL_LOGGER_KEY] === logDir && existsSync(logDir)) return;
   if (!existsSync(logDir)) {
     mkdirSync(logDir, { recursive: true });
@@ -118,7 +113,6 @@ function ensureLoggerInitialized() {
   (globalThis as any)[GLOBAL_LOGGER_KEY] = logDir;
 }
 
-/** Read only diagnostic fields; never dump arbitrary error payloads. */
 function errorDescription(error: unknown): string {
   if (error && typeof error === "object") {
     const value = error as { message?: unknown; name?: unknown; _tag?: unknown };
@@ -157,9 +151,7 @@ export function serializeError(error: unknown): {
 export function safeLog(message: string, data?: unknown): void {
   try {
     log(message, data);
-  } catch {
-    // swallow — the caller's cleanup matters more than this line
-  }
+  } catch {}
 }
 
 export function log(message: string, data?: unknown) {
@@ -173,10 +165,7 @@ export function log(message: string, data?: unknown) {
 
   const logFile = getLogFilePath();
   const timestamp = formatTimestamp(new Date());
-  // Sanitize strings before JSON escaping (notably multiline PEM blocks).
-  // The replacer does not modify caller-owned diagnostic objects.
   message = sanitizeMemoryContent(message);
-  // Also cover recognizable credentials used as diagnostic object keys.
   const line = sanitizeMemoryContent(
     data
       ? `[${timestamp}] ${message}: ${JSON.stringify(data, sanitizeMemoryField)}\n`
@@ -187,7 +176,6 @@ export function log(message: string, data?: unknown) {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException)?.code;
     if (code !== "ENOENT") throw error;
-    // Directory may have been removed after init (parallel test sandboxes).
     (globalThis as any)[GLOBAL_LOGGER_KEY] = undefined;
     ensureLoggerInitialized();
     appendFileSync(logFile, line);
