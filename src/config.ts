@@ -11,39 +11,32 @@ import {
 import { getDefaultInjectionMarkers } from "./services/injected-prompt-filter.js";
 import { DEFAULT_SQLD_URL } from "./services/turso/sqld-defaults.js";
 
-const CONFIG_DIR = join(homedir(), ".config", "opencode");
-const DATA_DIR = join(homedir(), ".opencode-mem");
-const CONFIG_FILES = [
-  join(CONFIG_DIR, "opencode-mem.jsonc"),
-  join(CONFIG_DIR, "opencode-mem.json"),
-];
-
-if (!existsSync(CONFIG_DIR)) {
-  mkdirSync(CONFIG_DIR, { recursive: true });
+function configDir(): string {
+  return process.env.OPENCODE_MEM_CONFIG_DIR ?? join(homedir(), ".config", "opencode");
 }
 
-if (!existsSync(DATA_DIR)) {
-  mkdirSync(DATA_DIR, { recursive: true });
+function dataDir(): string {
+  return process.env.OPENCODE_MEM_DATA_DIR ?? join(homedir(), ".opencode-mem");
+}
+
+function globalConfigFiles(): string[] {
+  return [join(configDir(), "opencode-mem.jsonc"), join(configDir(), "opencode-mem.json")];
+}
+
+if (!existsSync(configDir())) {
+  mkdirSync(configDir(), { recursive: true });
+}
+
+if (!existsSync(dataDir())) {
+  mkdirSync(dataDir(), { recursive: true });
 }
 
 interface OpenCodeMemConfig {
   storagePath?: string;
-  /** libSQL server (sqld) URL. Defaults to the local Docker endpoint. */
   sqldUrl?: string;
-  /** Auth token for sqld. Supports env:// / file:// refs. */
   sqldAuthToken?: string;
-  /** Opt-in: start the default local sqld container on plugin load. Default false. */
   autoStartSqld?: boolean;
-  /**
-   * Memory persistence backend. `database` (default) stores content in Turso.
-   * `markdown` uses a folder of `.md` files as source of truth; Turso is only
-   * a rebuildable semantic-search index.
-   */
   memoryBackend?: "database" | "markdown";
-  /**
-   * Absolute or `~/…` path to the Markdown vault. Required when
-   * `memoryBackend` is `"markdown"`. All `.md` files under this path are indexed.
-   */
   markdownPath?: string;
   userEmailOverride?: string;
   userNameOverride?: string;
@@ -52,28 +45,13 @@ interface OpenCodeMemConfig {
   };
   embeddingModel?: string;
   embeddingDimensions?: number;
-  /** Required: base URL of an OpenAI-compatible embeddings endpoint. */
   embeddingApiUrl?: string;
-  /** Required: API key for the embeddings endpoint. */
   embeddingApiKey?: string;
-  /** Opt-in Nomic task prefixes (`search_document:` / `search_query:`). Default false. */
   embeddingUseTaskPrefixes?: boolean;
-  /**
-   * Prefix applied to query-task embeddings. When unset, model presets or
-   * `embeddingUseTaskPrefixes` (Nomic) may supply one. Explicit `""` disables.
-   */
   embeddingQueryPrefix?: string;
-  /**
-   * Prefix applied to document-task embeddings. Same resolution rules as
-   * `embeddingQueryPrefix`.
-   */
   embeddingDocumentPrefix?: string;
   similarityThreshold?: number;
   maxMemories?: number;
-  /**
-   * @deprecated No effect. Use userProfileInjectPreferences, userProfileInjectPatterns,
-   * and userProfileInjectWorkflows to limit injected profile context.
-   */
   maxProfileItems?: number;
   injectProfile?: boolean;
   containerTagPrefix?: string;
@@ -83,22 +61,9 @@ interface OpenCodeMemConfig {
   autoCaptureMaxRetries?: number;
   autoCaptureMaxContextBytes?: number;
   autoCaptureLanguage?: string;
-  /**
-   * When true, auto-capture searches for similar memories before insert and
-   * may update or supersede an existing entry instead of always adding.
-   * Default false (opt-in).
-   */
   updateOnCaptureEnabled?: boolean;
-  /** Cosine/hybrid floor for update-on-capture candidates. Default 0.75. */
   updateOnCaptureSimilarityThreshold?: number;
-  /** Max similar memories shown to the decision LLM. Default 5. */
   updateOnCaptureMaxCandidates?: number;
-  /**
-   * Which auto-capture summary channel to try first when both opencode and
-   * manual (memoryModel/memoryApiUrl) providers are configured.
-   * Default "opencode-first". Use "external-first" for lower latency when the
-   * host session API is busy; failed primary channel falls back to the other.
-   */
   autoCaptureProviderOrder?: "opencode-first" | "external-first";
   memoryProvider?:
     | "atlas-cloud"
@@ -116,29 +81,11 @@ interface OpenCodeMemConfig {
   memoryApiUrl?: string;
   memoryApiKey?: string;
   memoryTemperature?: number | false;
-  /**
-   * Force chat-completion providers to send `tool_choice: "required"`.
-   * Defaults to true when unset. Set to false for models that reject forced
-   * tool choice (e.g. some thinking/reasoning modes).
-   */
   forceToolChoice?: boolean;
   memoryExtraParams?: Record<string, unknown>;
   opencodeProvider?: string;
   opencodeModel?: string;
-  /**
-   * Optional reasoning variant for internal LLM calls that use
-   * opencodeProvider/opencodeModel (e.g. "xhigh"). Applied whenever set,
-   * including with opencodeModel "inherit", so background work can pin a
-   * cheaper/faster/higher variant than the interactive session default.
-   */
   opencodeVariant?: string;
-  /**
-   * Timeout in milliseconds for the plugin's internal structured-output LLM
-   * calls (auto-capture summaries, profile learning). Profile cleanup keeps
-   * its own longer timeout. Clamped to 10000..600000; non-number/non-finite
-   * values (and non-numeric strings) fall back to the 90000 default. Numeric
-   * strings like "180000" are coerced.
-   */
   opencodeTimeoutMs?: number;
   aiSessionRetentionDays?: number;
   webServerEnabled?: boolean;
@@ -154,17 +101,8 @@ interface OpenCodeMemConfig {
   deduplicationSimilarityThreshold?: number;
   userProfileAnalysisInterval?: number;
   userProfileMaxContextBytes?: number;
-  /**
-   * @deprecated No effect on the UI. Use userProfileInjectPreferences for LLM context only.
-   */
   userProfileDisplayPreferences?: number;
-  /**
-   * @deprecated No effect on the UI. Use userProfileInjectPatterns for LLM context only.
-   */
   userProfileDisplayPatterns?: number;
-  /**
-   * @deprecated No effect on the UI. Use userProfileInjectWorkflows for LLM context only.
-   */
   userProfileDisplayWorkflows?: number;
   userProfileStaleDays?: number;
   userProfileInjectPreferences?: number;
@@ -185,7 +123,6 @@ interface OpenCodeMemConfig {
   showAutoCaptureToasts?: boolean;
   showUserProfileToasts?: boolean;
   showErrorToasts?: boolean;
-  /** Automatically clear OpenCode's cached plugin install when a newer npm latest is available. */
   autoUpdate?: boolean;
   compaction?: {
     enabled?: boolean;
@@ -197,49 +134,19 @@ interface OpenCodeMemConfig {
     excludeCurrentSession?: boolean;
     maxAgeDays?: number;
     injectOn?: "first" | "always";
-    /**
-     * How auto-injected memories are selected.
-     * - recent: newest pinned/recency listing (legacy)
-     * - relevant: vector search against the current user prompt (default)
-     * - both: relevant first, then fill remaining slots with recent
-     */
     recall?: "recent" | "relevant" | "both";
-    /**
-     * Scope for auto-recall search/list. "default" follows memory.defaultScope.
-     */
     recallScope?: "project" | "all-projects" | "default";
-    /** Optional override of top-level similarityThreshold for relevant recall. */
     similarityThreshold?: number;
     filterInjectedPrompts?: boolean;
     injectionMarkers?: string[];
-    /**
-     * Capture "user" prompts from orchestrator child sessions (sessions with
-     * a parentID, e.g. OpenCode task/subagent). Default false: those prompts
-     * are written by the parent agent, not the human, and would train
-     * auto-capture / profile learning on the orchestrator's style.
-     */
     captureChildSessions?: boolean;
   };
-  /**
-   * Opt-in background memory consolidation ("dreaming"): merge near-duplicate
-   * memories via the configured LLM and soft-delete superseded rows into trash.
-   * `enabled` controls only the scheduled background pass; the web UI / API
-   * manual trigger still runs when false.
-   */
   dreaming?: {
     enabled?: boolean;
     intervalHours?: number;
     maxGroupsPerRun?: number;
     trashRetentionDays?: number;
-    /**
-     * Similarity floor for related (not only near-duplicate) dreaming groups.
-     * Default 0.75. Independent of deduplicationSimilarityThreshold.
-     */
     relatedThreshold?: number;
-    /**
-     * Allow grouping across project container tags. Also effective when
-     * memory.defaultScope is "all-projects". User-scope stays separate.
-     */
     crossProject?: boolean;
   };
 }
@@ -310,7 +217,7 @@ const DEFAULTS: Required<
     defaultScope?: "project" | "all-projects";
   };
 } = {
-  storagePath: join(DATA_DIR, "data"),
+  storagePath: join(dataDir(), "data"),
   sqldUrl: DEFAULT_SQLD_URL,
   autoStartSqld: false,
   memoryBackend: "database",
@@ -319,7 +226,6 @@ const DEFAULTS: Required<
   embeddingUseTaskPrefixes: false,
   similarityThreshold: 0.6,
   maxMemories: 10,
-  // Deprecated compatibility value; not used for profile selection.
   maxProfileItems: 5,
   injectProfile: true,
   containerTagPrefix: "opencode",
@@ -343,7 +249,6 @@ const DEFAULTS: Required<
   deduplicationSimilarityThreshold: 0.9,
   userProfileAnalysisInterval: 10,
   userProfileMaxContextBytes: 32768,
-  // Deprecated compatibility values; not used by the UI.
   userProfileDisplayPreferences: 20,
   userProfileDisplayPatterns: 15,
   userProfileDisplayWorkflows: 10,
@@ -419,9 +324,7 @@ function loadConfigFromPaths(paths: string[]): OpenCodeMemConfig {
         const content = readFileSync(path, "utf-8");
         const json = stripJsoncComments(content);
         return JSON.parse(json) as OpenCodeMemConfig;
-      } catch {
-        // ignore unreadable or invalid config files
-      }
+      } catch {}
     }
   }
   return {};
@@ -445,7 +348,7 @@ function assertProjectRemoteProviderConfigIsSafe(projectConfig: OpenCodeMemConfi
   if (configuredFields.length > 0) {
     throw new Error(
       `Project config cannot set remote provider fields: ${configuredFields.join(", ")}. ` +
-        `Move them to the global config at ${CONFIG_FILES[0]}.`
+        `Move them to the global config at ${globalConfigFiles()[0]}.`
     );
   }
 }
@@ -910,16 +813,14 @@ const CONFIG_TEMPLATE = `{
 `;
 
 function ensureConfigExists(): void {
-  const configPath = join(CONFIG_DIR, "opencode-mem.jsonc");
+  const configPath = join(configDir(), "opencode-mem.jsonc");
 
   if (!existsSync(configPath)) {
     try {
       writeFileSync(configPath, CONFIG_TEMPLATE, "utf-8");
       console.log(`\n✓ Created config template: ${configPath}`);
       console.log("  Edit this file to customize opencode-mem settings.\n");
-    } catch {
-      // ignore if the template cannot be written
-    }
+    } catch {}
   }
 }
 
@@ -967,7 +868,6 @@ export function getEmbeddingModelPreset(model: string): EmbeddingModelPreset | u
 
 function getEmbeddingDimensions(model: string): number {
   const dimensionMap: Record<string, number> = {
-    // Local Xenova models
     "Xenova/nomic-embed-text-v1": 768,
     "Xenova/nomic-embed-text-v1-unsupervised": 768,
     "Xenova/nomic-embed-text-v1-ablated": 768,
@@ -985,28 +885,23 @@ function getEmbeddingDimensions(model: string): number {
     "Xenova/GIST-small-Embedding-v0": 384,
     "Xenova/text-embedding-ada-002": 1536,
 
-    // Other local / ONNX community models
     "intfloat/multilingual-e5-large": 1024,
     "intfloat/multilingual-e5-base": 768,
     "intfloat/e5-large-v2": 1024,
     "onnx-community/Qwen3-Embedding-0.6B-ONNX": 1024,
 
-    // OpenAI API models
     "text-embedding-3-small": 1536,
     "text-embedding-3-large": 3072,
     "text-embedding-ada-002": 1536,
 
-    // Cohere API models
     "embed-english-v3.0": 1024,
     "embed-multilingual-v3.0": 1024,
     "embed-english-light-v3.0": 384,
     "embed-multilingual-light-v3.0": 384,
 
-    // Google API models
     "text-embedding-004": 768,
     "text-multilingual-embedding-002": 768,
 
-    // Voyage AI models
     "voyage-3": 1024,
     "voyage-3-lite": 512,
     "voyage-code-3": 1024,
@@ -1035,10 +930,6 @@ export function normalizeAutoCleanupRetentionDays(value: number): number {
   return value;
 }
 
-/**
- * Blank/whitespace-only opencodeVariant values are treated as unset so the
- * prompt bodies never carry an empty `variant` key.
- */
 function normalizeOpencodeVariant(value: string | undefined): string | undefined {
   const trimmed = typeof value === "string" ? value.trim() : "";
   return trimmed ? trimmed : undefined;
@@ -1189,9 +1080,6 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
               : memoryProvider === "standardcompute"
                 ? process.env.STANDARDCOMPUTE_API_KEY
                 : undefined);
-  // Preset providers advertise optional memoryModel / memoryApiUrl in docs and
-  // factory code, but auto-capture / dreaming / profile learning gate on the
-  // resolved CONFIG fields. Fill preset defaults here so key-only configs work.
   const presetDefaults = resolveMemoryProviderPresetDefaults(memoryProvider);
   const memoryModel =
     (typeof fileConfig.memoryModel === "string" ? fileConfig.memoryModel.trim() : "") ||
@@ -1269,10 +1157,6 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
       : undefined,
     similarityThreshold: fileConfig.similarityThreshold ?? DEFAULTS.similarityThreshold,
     maxMemories: fileConfig.maxMemories ?? DEFAULTS.maxMemories,
-    /**
-     * @deprecated No effect. Use userProfileInjectPreferences, userProfileInjectPatterns,
-     * and userProfileInjectWorkflows to limit injected profile context.
-     */
     maxProfileItems: fileConfig.maxProfileItems ?? DEFAULTS.maxProfileItems,
     injectProfile: fileConfig.injectProfile ?? DEFAULTS.injectProfile,
     containerTagPrefix: fileConfig.containerTagPrefix ?? DEFAULTS.containerTagPrefix,
@@ -1335,19 +1219,10 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
       fileConfig.userProfileAnalysisInterval ?? DEFAULTS.userProfileAnalysisInterval,
     userProfileMaxContextBytes:
       fileConfig.userProfileMaxContextBytes ?? DEFAULTS.userProfileMaxContextBytes,
-    /**
-     * @deprecated No effect on the UI. Use userProfileInjectPreferences for LLM context only.
-     */
     userProfileDisplayPreferences:
       fileConfig.userProfileDisplayPreferences ?? DEFAULTS.userProfileDisplayPreferences,
-    /**
-     * @deprecated No effect on the UI. Use userProfileInjectPatterns for LLM context only.
-     */
     userProfileDisplayPatterns:
       fileConfig.userProfileDisplayPatterns ?? DEFAULTS.userProfileDisplayPatterns,
-    /**
-     * @deprecated No effect on the UI. Use userProfileInjectWorkflows for LLM context only.
-     */
     userProfileDisplayWorkflows:
       fileConfig.userProfileDisplayWorkflows ?? DEFAULTS.userProfileDisplayWorkflows,
     userProfileInjectPreferences:
@@ -1430,7 +1305,7 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
   };
 }
 
-const _globalFileConfig = loadConfigFromPaths(CONFIG_FILES);
+const _globalFileConfig = loadConfigFromPaths(globalConfigFiles());
 export let CONFIG = buildConfig(_globalFileConfig);
 
 type RuntimeConfig = ReturnType<typeof buildConfig>;
@@ -1471,9 +1346,6 @@ export function getAutoCaptureProviderStatus(
   const hasMemoryApiKey = hasValue(config.memoryApiKey);
   const hasPlaceholderMemoryApiKey = isPlaceholderApiKey(config.memoryApiKey);
 
-  // Preset providers fill endpoint/model themselves (and buildConfig resolves
-  // those defaults into CONFIG), so only an API key is required for the manual
-  // fallback path.
   if (isMemoryProviderPreset(config.memoryProvider)) {
     if (!hasMemoryApiKey) issues.push("memoryApiKey is not configured");
     if (hasPlaceholderMemoryApiKey) issues.push("memoryApiKey contains a placeholder value");
@@ -1504,7 +1376,7 @@ export function initConfig(directory: string): void {
     join(directory, ".opencode", "opencode-mem.jsonc"),
     join(directory, ".opencode", "opencode-mem.json"),
   ];
-  const globalConfig = loadConfigFromPaths(CONFIG_FILES);
+  const globalConfig = loadConfigFromPaths(globalConfigFiles());
   const projectConfig = loadConfigFromPaths(projectPaths);
   assertProjectRemoteProviderConfigIsSafe(projectConfig);
   const projectOverrides = { ...projectConfig };
@@ -1519,7 +1391,7 @@ export function initConfig(directory: string): void {
     ].filter(Boolean);
     console.error(
       `opencode-mem: remote embeddings are required — ${missing.join(", ")} is missing. ` +
-        `Set both in the global config (${CONFIG_FILES[0]}). ` +
+        `Set both in the global config (${globalConfigFiles()[0]}). ` +
         `The local ONNX embedding backend was removed because its native bindings ` +
         `do not ship for all platforms (e.g. Intel Macs). ` +
         `Memory capture and search stay disabled until this is fixed.`
