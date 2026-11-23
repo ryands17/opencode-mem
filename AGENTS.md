@@ -22,6 +22,8 @@ bun run web:dev        # web UI only
 
 Prefer `bun` over `npm`/`npx`. Use `bunx` when a one-off binary is needed.
 
+`bunfig.toml` sets `linker = "isolated"`, so code can only import packages that `package.json` declares. Keep `"types": ["bun"]` in `tsconfig.json` (not `bun-types`). Do not pin `bun-types` below 1.4.x: older versions import `undici-types` without declaring it, which breaks `Response`/`Request` types when the Bun global store (`globalStore = true`) is on.
+
 ## Commits — Conventional Commits only
 
 All commits **MUST** follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/):
